@@ -1,7 +1,8 @@
 import { activeAdjacencyEdges, cellLabel, edgeKey, hasBit, orthogonalNeighbors } from "./geometry.js";
 import { generateCandidateDiagnostics } from "./candidates.js";
 import { clonePuzzle, normalizePuzzle, setEdgeState } from "./puzzle.js";
-import { solvePuzzle } from "./solver.js";
+import { chooseSolverEngine, solvePuzzle } from "./solver.js";
+import { forcedBorders } from "./edge-solver.js";
 import { candidateShapeForComparison } from "./shape-comparison.js";
 import { ruleExplanationSnippet } from "./rule-explanations.js";
 
@@ -12,6 +13,7 @@ export function findNextLogicalStep(puzzle, options = {}) {
   const maxNodes = options.maxNodes ?? DEFAULT_MAX_NODES;
   const completionLimit = options.completionLimit ?? DEFAULT_COMPLETION_LIMIT;
   const normalized = normalizePuzzle(puzzle);
+  if (chooseSolverEngine(normalized, options) === "borders") return borderSolverNextStep(normalized, options);
   const base = solvePuzzle(normalized, { limit: completionLimit, maxNodes });
   const directViolation = findDirectCandidateViolationStep(normalized, options);
   if (directViolation) return { status: "step", step: directViolation, base };
@@ -72,6 +74,56 @@ export function findNextLogicalStep(puzzle, options = {}) {
   };
 }
 
+/**
+ * Next step for puzzles handled by the border solver. A full solve can be slow there, so the step
+ * comes from borders the solver proves directly: by propagation, or because the opposite value
+ * leads to a contradiction. Only when none is left does it fall back to solving.
+ */
+function borderSolverNextStep(puzzle, options) {
+  const proven = forcedBorders(puzzle);
+  if (!proven.ok) {
+    return { status: "no_solution", message: "The current puzzle has no solution under the implemented rules.", base: null };
+  }
+  const steps = proven.forced.map(({ a, b, state, how }) =>
+    forcedEdgeStep(puzzle, a, b, state, how === "probing"
+      ? { result: "no_solution", reason: "the region, clue and relation rules reach a contradiction" }
+      : { result: "propagation", reason: "The region, clue and relation rules leave no other option for this border." })
+  );
+  if (steps.length) return { status: "step", step: steps[0], moreSteps: steps.slice(1), base: null };
+
+  const base = solvePuzzle(puzzle, {
+    limit: options.completionLimit ?? DEFAULT_COMPLETION_LIMIT,
+    maxNodes: options.maxNodes ?? DEFAULT_MAX_NODES,
+    maxMillis: options.maxMillis
+  });
+  if (base.status === "no_solution") {
+    return { status: "no_solution", message: "The current puzzle has no solution under the implemented rules.", base };
+  }
+  if (base.status === "search_limit") {
+    return {
+      status: "search_limit",
+      message: "No border can be proven directly, and the solver hit its limit before finishing. Add givens or raise the limit.",
+      base
+    };
+  }
+  const agreementEdge = findAgreementEdgeStep(puzzle, base);
+  if (agreementEdge) return { status: "step", step: agreementEdge, base };
+  const agreementRegion = findAgreementRegionStep(puzzle, base);
+  if (agreementRegion) return { status: "step", step: agreementRegion, base };
+  if (base.status === "unique_solution") {
+    return {
+      status: "complete_or_global",
+      message: "The solver sees a unique full solution, but all applyable border and region deductions have already been recorded.",
+      base
+    };
+  }
+  return {
+    status: "ambiguous",
+    message: "No border is forced from the current puzzle state. The puzzle may have multiple solutions.",
+    base
+  };
+}
+
 export function explainCandidateViolations(rawPuzzle, options = {}) {
   const puzzle = normalizePuzzle(rawPuzzle);
   const diagnostics = generateCandidateDiagnostics(puzzle, options);
@@ -88,22 +140,30 @@ export function explainAllLogicalSteps(rawPuzzle, options = {}) {
   let status = "complete";
   let message = "No further implemented logical steps.";
 
+  // Borders proven together stay proven as the puzzle fills in, so queued ones are used before
+  // asking for a fresh step.
+  const queued = [];
   for (let index = 0; index < maxSteps; index += 1) {
-    const result = findNextLogicalStep(puzzle, options);
-    if (!result.step) {
-      status = result.status;
-      message = result.message;
-      break;
+    let step = queued.shift();
+    if (!step) {
+      const result = findNextLogicalStep(puzzle, options);
+      if (!result.step) {
+        status = result.status;
+        message = result.message;
+        break;
+      }
+      step = result.step;
+      queued.push(...(result.moreSteps ?? []));
     }
 
-    steps.push(result.step);
-    if (!isStepApplyable(result.step)) {
+    steps.push(step);
+    if (!isStepApplyable(step)) {
       status = "blocked";
       message = "The next explanation is informative but cannot be applied as a puzzle state change.";
       break;
     }
 
-    const nextPuzzle = applyLogicalStep(puzzle, result.step);
+    const nextPuzzle = applyLogicalStep(puzzle, step);
     if (JSON.stringify(nextPuzzle.edgeConstraints) === JSON.stringify(puzzle.edgeConstraints) &&
         JSON.stringify(nextPuzzle.metadata) === JSON.stringify(puzzle.metadata)) {
       status = "stalled";

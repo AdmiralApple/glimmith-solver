@@ -1,10 +1,40 @@
 import { createConstraintModel } from "./constraints.js";
 import { activeCellIndexes, hasBit, maskFromIndexes } from "./geometry.js";
 import { normalizePuzzle } from "./puzzle.js";
-import { generateCandidates } from "./candidates.js";
+import { buildCandidateGenerationPlan, generateCandidates } from "./candidates.js";
 import { addRuleConstraints, createRuleContext } from "./rules/registry.js";
 import { candidateShapeForComparison } from "./shape-comparison.js";
 import { validatePuzzle } from "./validation.js";
+import { solveByBorders } from "./edge-solver.js";
+
+/**
+ * Candidate plans that list every region a solution could use. The other plans only list regions
+ * for some clues (Polyomino, Area Number) or none at all, so exact cover over them can miss
+ * solutions; those puzzles go to the border solver instead.
+ */
+const COMPLETE_CANDIDATE_PLANS = new Set(["shape_bank", "fixed_area", "range"]);
+
+/** Listing regions of this many cells or more gets too slow; the border solver takes those puzzles. */
+const LARGE_REGION_AREA = 12;
+
+/**
+ * Which solver handles this puzzle: "candidates" (exact cover over listed regions, fast when the
+ * list is complete and small) or "borders" (decides borders one by one; handles anything). Decided
+ * from the candidate plan alone, without listing any regions. Pass options.engine to force one.
+ * Even when this says "candidates", solvePuzzle switches to borders if the list gets truncated.
+ */
+export function chooseSolverEngine(puzzle, options = {}) {
+  if (options.engine === "candidates" || options.engine === "borders") return options.engine;
+  const context = createRuleContext(puzzle, options);
+  const plan = buildCandidateGenerationPlan(puzzle, context);
+  if (!COMPLETE_CANDIDATE_PLANS.has(plan.kind)) return "borders";
+  if (plan.kind === "fixed_area" && plan.area >= LARGE_REGION_AREA) return "borders";
+  if (plan.kind === "range") {
+    const max = Number(context.ruleConfigs.range?.max);
+    if (!Number.isInteger(max) || max >= LARGE_REGION_AREA) return "borders";
+  }
+  return "candidates";
+}
 
 export function solvePuzzle(rawPuzzle, options = {}) {
   const validation = validatePuzzle(rawPuzzle);
@@ -36,8 +66,11 @@ export function solvePuzzle(rawPuzzle, options = {}) {
     };
   }
 
+  const borders = () => solveByBorders(puzzle, { limit, maxNodes, maxMillis: options.maxMillis });
+  if (chooseSolverEngine(puzzle, options) === "borders") return borders();
   let context = createRuleContext(puzzle, options);
-  const { candidates, errors, plan } = generateCandidates(puzzle, { ...options, context });
+  const { candidates, errors, plan, truncated } = generateCandidates(puzzle, { ...options, context });
+  if (truncated && options.engine !== "candidates") return borders();
   context = createRuleContext(puzzle, { ...options, candidates });
   const candidatesByCell = Array.from({ length: puzzle.width * puzzle.height }, () => []);
   for (const candidate of candidates) {
@@ -73,7 +106,7 @@ export function solvePuzzle(rawPuzzle, options = {}) {
   if (solutions.length === 0) status = "no_solution";
   else if (hitNodeLimit) status = "search_limit";
   else if (limit === 1) status = "solution_found";
-  else if (solutions.length >= limit) status = "multiple_solutions";
+  else if (solutions.length > 1) status = "multiple_solutions";
   else status = "unique_solution";
 
   return {

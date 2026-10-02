@@ -1,4 +1,4 @@
-import { boundsOfShape } from "../geometry.js";
+import { boundsOfShape, normalizeShape } from "../geometry.js";
 
 export const boxyRule = {
   id: "boxy",
@@ -43,7 +43,8 @@ export const nonBoxyRule = {
 };
 
 function isBoxy(candidate) {
-  const cells = candidate.shapeCells ?? [];
+  // shapeCells are board coordinates; measure the bounding box from the region's own corner.
+  const cells = normalizeShape(candidate.shapeCells ?? []);
   if (cells.length === 0) return false;
   const bounds = boundsOfShape(cells);
   return candidate.area === bounds.width * bounds.height;

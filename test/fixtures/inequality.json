@@ -6,7 +6,7 @@
       "expectedStatus": "unique_solution",
       "expectedSolutionCount": 1,
       "expectedRegionCount": 2,
-      "expectedForcedSteps": ["candidate_eliminated", "forced_region"],
+      "expectedForcedSteps": ["candidate_eliminated", "forced_region", "forced_cut", "forced_join"],
       "puzzle": {
         "width": 3,
         "height": 1,

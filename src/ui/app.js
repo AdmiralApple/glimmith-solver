@@ -2,9 +2,12 @@ import { activeAdjacencyEdges, boundsOfShape, cellLabel, edgeKey, idx, normalize
 import {
   createPuzzle,
   cycleCellSymbol,
-  cycleEdgeConstraint,
   normalizePuzzle,
   resizePuzzle,
+  placeBorderEffect,
+  removeBorderEffects,
+  setCellSymbol,
+  setEdgeState,
   TETROMINO_PRESET,
   toggleCellActive
 } from "../core/puzzle.js";
@@ -35,6 +38,11 @@ import {
 import { inspectorStateForSelection } from "./inspector-state.js";
 import { hasUiCandidateSource } from "./candidate-source.js";
 import { parseVertexKey, vertexKey } from "./board-hit-testing.js";
+import { applyWallSegment, CORNER_HOVER_FRACTION, cornersCrossed, locateBoardPoint, resolveHotkey } from "./hotkeys.js";
+import { loadWorkingPuzzle, saveWorkingPuzzle } from "./working-puzzle.js";
+import { boardSizeWarning, parseBoardDimension } from "./board-size.js";
+import { parseGamePuzzle } from "../core/game-format.js";
+import { groupGamePuzzleFiles, readGamePuzzleEntries } from "./game-import.js";
 import { EXAMPLES, exampleById } from "./examples.js";
 import { canRedo, canUndo, cloneState, createHistory, recordHistory, redoHistory, undoHistory } from "./history.js";
 import {
@@ -49,9 +57,24 @@ import {
 const CELL = 46;
 const SVG_PAD = 10;
 const MINI_GRID_SIZE = 5;
+const RELATION_TOOLS = Object.freeze(["gemini", "delta", "difference", "inequality"]);
+/** Board tool that places each clue rule's clues; used for the rule cards' Place buttons. */
+const RULE_PLACEMENT_TOOLS = Object.freeze({
+  area_number: "areaNumber",
+  difference: "difference",
+  polyomino: "polyomino",
+  gemini: "gemini",
+  delta: "delta",
+  palisade: "palisade",
+  compass: "compass",
+  watchtower: "watchtower",
+  inequality: "inequality"
+});
+const RULE_FILTER_KEY = "glimmith.ruleFilter";
 const DEFAULT_BANK_SHAPE = "O4: 0,0 1,0 0,1 1,1";
 
-let puzzle = createPuzzle(6, 6);
+const restoredPuzzle = loadWorkingPuzzle();
+let puzzle = restoredPuzzle ?? createPuzzle(6, 6);
 let puzzleHistory = createHistory(puzzle);
 let currentTool = "cell";
 let currentSolution = null;
@@ -61,6 +84,18 @@ let selectedClueId = null;
 let lastCandidateSummary = null;
 let explanationTrace = [];
 let relationFirstCell = null;
+let ruleFilter = "all";
+const HOTKEY_MODE_TIMEOUT_MS = 2500;
+const AREA_DIGIT_CHAIN_MS = 800;
+// A pointer within 0.2 of a tile of a grid corner selects the corner, not the tile.
+const VERTEX_HOVER_RADIUS = CORNER_HOVER_FRACTION * CELL;
+const VERTEX_DIAMOND_SIZE = 7;
+let hoverTarget = null;
+let hotkeyMode = null;
+let hotkeyModeTimer = null;
+let lastAreaDigit = { cell: null, value: 0, at: 0 };
+let wallStroke = null;
+let suppressBoardClick = false;
 let lastChangeDescription = "Initial puzzle";
 let shapeDraftCells = new Set(["0,0", "1,0", "0,1", "1,1"]);
 let polyominoDraftCells = new Set(["0,0", "1,0", "0,1"]);
@@ -80,6 +115,7 @@ const el = {
   boardSvg: document.getElementById("boardSvg"),
   widthInput: document.getElementById("widthInput"),
   heightInput: document.getElementById("heightInput"),
+  boardSizeWarning: document.getElementById("boardSizeWarning"),
   resizeButton: document.getElementById("resizeButton"),
   rulePalette: document.getElementById("rulePalette"),
   areaInput: document.getElementById("areaInput"),
@@ -89,7 +125,6 @@ const el = {
   shapeEquivRotationsInput: document.getElementById("shapeEquivRotationsInput"),
   shapeEquivReflectionsInput: document.getElementById("shapeEquivReflectionsInput"),
   areaClueValueInput: document.getElementById("areaClueValueInput"),
-  relationRuleInput: document.getElementById("relationRuleInput"),
   differenceValueInput: document.getElementById("differenceValueInput"),
   inequalityDirectionInput: document.getElementById("inequalityDirectionInput"),
   relationPickHint: document.getElementById("relationPickHint"),
@@ -122,7 +157,21 @@ const el = {
   cellFillOpacityInput: document.getElementById("cellFillOpacityInput"),
   clearScreenshotButton: document.getElementById("clearScreenshotButton"),
   maxNodesInput: document.getElementById("maxNodesInput"),
+  maxSecondsInput: document.getElementById("maxSecondsInput"),
+  cancelSolveButton: document.getElementById("cancelSolveButton"),
   undoButton: document.getElementById("undoButton"),
+  resetButton: document.getElementById("resetButton"),
+  resetDialog: document.getElementById("resetDialog"),
+  importGameButton: document.getElementById("importGameButton"),
+  gameImportDialog: document.getElementById("gameImportDialog"),
+  gameFolderButton: document.getElementById("gameFolderButton"),
+  gameFileButton: document.getElementById("gameFileButton"),
+  gameFolderInput: document.getElementById("gameFolderInput"),
+  gameFileInput: document.getElementById("gameFileInput"),
+  gamePuzzleList: document.getElementById("gamePuzzleList"),
+  gamePuzzleText: document.getElementById("gamePuzzleText"),
+  gamePasteImportButton: document.getElementById("gamePasteImportButton"),
+  gameImportStatus: document.getElementById("gameImportStatus"),
   redoButton: document.getElementById("redoButton"),
   solveButton: document.getElementById("solveButton"),
   nextStepButton: document.getElementById("nextStepButton"),
@@ -157,21 +206,35 @@ const el = {
   currentToolDescription: document.getElementById("currentToolDescription"),
   currentToolParams: document.getElementById("currentToolParams"),
   inspectorBox: document.getElementById("inspectorBox"),
-  shapeBankList: document.getElementById("shapeBankList")
+  shapeBankList: document.getElementById("shapeBankList"),
+  ruleFilter: document.getElementById("ruleFilter"),
+  activeRuleCount: document.getElementById("activeRuleCount"),
+  ruleFilterEmpty: document.getElementById("ruleFilterEmpty"),
+  ruleSettingsStore: document.getElementById("ruleSettingsStore")
 };
 
 setupTheme();
+buildRulePalette();
+setRuleFilter(loadRuleFilter());
 renderExampleOptions();
 renderSavedPuzzleOptions();
 bindEvents();
 syncFormFromPuzzle();
 render();
+if (restoredPuzzle) renderStatus("Restored your last puzzle from this browser.", "good");
 
 function bindEvents() {
+  bindHotkeys();
   el.themeToggle.addEventListener("change", (event) => {
     if (event.target.name !== "themePreference") return;
     const preference = saveThemePreference(event.target.value);
     applyThemePreference(preference);
+  });
+
+  el.resetButton.addEventListener("click", () => el.resetDialog.showModal());
+  bindGameImport();
+  el.resetDialog.addEventListener("close", () => {
+    if (el.resetDialog.returnValue === "reset") resetPuzzle();
   });
 
   el.undoButton.addEventListener("click", undoPuzzleEdit);
@@ -270,11 +333,13 @@ function bindEvents() {
   });
 
   el.resizeButton.addEventListener("click", () => {
-    const width = clamp(Number(el.widthInput.value) || puzzle.width, 1, 14);
-    const height = clamp(Number(el.heightInput.value) || puzzle.height, 1, 14);
-    commitPuzzle(resizePuzzle(puzzle, width, height), `Resized board to ${width}x${height}`, { syncForm: true });
+    const width = parseBoardDimension(el.widthInput.value, puzzle.width);
+    const height = parseBoardDimension(el.heightInput.value, puzzle.height);
+    commitPuzzle(resizePuzzle(puzzle, width, height, { fillNew: document.getElementById("fillNewInput").checked }), `Resized board to ${width}x${height}`, { syncForm: true });
     render();
   });
+  el.widthInput.addEventListener("input", updateBoardSizeWarning);
+  el.heightInput.addEventListener("input", updateBoardSizeWarning);
 
   el.rulePalette.addEventListener("change", (event) => {
     const toggle = event.target.closest("[data-rule-toggle]");
@@ -288,26 +353,33 @@ function bindEvents() {
     if (rangeOption) updateRangeOption(rangeOption.dataset.rangeOption, rangeOption.value);
   });
 
+  el.ruleFilter.addEventListener("change", (event) => {
+    if (event.target.name === "ruleFilter") setRuleFilter(event.target.value);
+  });
+  el.rulePalette.addEventListener("focusout", () => {
+    // Settings stay open while being edited; re-check once focus leaves a card.
+    setTimeout(updateRulePalette, 0);
+  });
+
   el.rulePalette.addEventListener("click", (event) => {
     const toolButton = event.target.closest("[data-select-tool]");
     if (!toolButton) return;
-    if (toolButton.dataset.relationRule) el.relationRuleInput.value = toolButton.dataset.relationRule;
     setCurrentTool(toolButton.dataset.selectTool);
     renderStatus(toolButton.dataset.status ?? "Tool selected.", "");
   });
 
-  el.areaInput.addEventListener("change", () => updateRulesFromForm(true, { label: "Changed Precision area" }));
-  el.roseInput.addEventListener("input", () => updateRulesFromForm(true, { label: "Changed Rose labels" }));
+  el.areaInput.addEventListener("change", () => updateRulesFromForm(true, { label: "Changed Precision area", enable: ["precision"] }));
+  el.roseInput.addEventListener("input", () => updateRulesFromForm(true, { label: "Changed Rose labels", enable: ["rose_window"] }));
   el.rotationsInput.addEventListener("change", () => updateRulesFromForm(true, { label: "Changed Shape Bank rotation setting" }));
   el.reflectionsInput.addEventListener("change", () => updateRulesFromForm(true, { label: "Changed Shape Bank reflection setting" }));
   el.shapeEquivRotationsInput.addEventListener("change", () => updateRulesFromForm(true, { label: "Changed shape-comparison rotation setting" }));
   el.shapeEquivReflectionsInput.addEventListener("change", () => updateRulesFromForm(true, { label: "Changed shape-comparison reflection setting" }));
-  el.shapeBankInput.addEventListener("input", () => updateRulesFromForm(true, { label: "Edited Shape Bank text" }));
+  el.shapeBankInput.addEventListener("input", () => updateRulesFromForm(true, { label: "Edited Shape Bank text", enable: ["shape_bank"] }));
   el.shapeBankList.addEventListener("click", (event) => {
     const deleteButton = event.target.closest("[data-delete-shape-index]");
     if (!deleteButton) return;
     el.shapeBankInput.value = removeShapeBankEntryAt(el.shapeBankInput.value, Number(deleteButton.dataset.deleteShapeIndex));
-    updateRulesFromForm(false, { label: "Deleted Shape Bank entry" });
+    updateRulesFromForm(false, { label: "Deleted Shape Bank entry", enable: ["shape_bank"] });
     renderStatus("Shape removed from the Shape Bank.", "good");
     render();
   });
@@ -371,12 +443,19 @@ function bindEvents() {
     }
   });
 
-  el.relationRuleInput.addEventListener("change", () => {
-    relationFirstCell = null;
-    updateRelationHint();
-    render();
-  });
-  for (const input of [el.differenceValueInput, el.inequalityDirectionInput, el.watchtowerValueInput]) {
+  for (const input of [
+    el.areaClueValueInput,
+    el.differenceValueInput,
+    el.inequalityDirectionInput,
+    el.watchtowerValueInput,
+    el.palisadePatternInput,
+    el.compassNInput,
+    el.compassEInput,
+    el.compassSInput,
+    el.compassWInput,
+    el.polyominoRotationsInput,
+    el.polyominoReflectionsInput
+  ]) {
     input.addEventListener("change", () => renderToolBanner());
   }
 
@@ -403,7 +482,7 @@ function bindEvents() {
       return;
     }
     el.shapeBankInput.value = appendShapeBankEntry(el.shapeBankInput.value, entry);
-    updateRulesFromForm(false, { label: "Added Shape Bank entry" });
+    updateRulesFromForm(false, { label: "Added Shape Bank entry", enable: ["shape_bank"] });
     el.shapeNameInput.value = `Shape${shapeBankLineCount() + 1}`;
     renderStatus("Drawn shape added to the Shape Bank.", "good");
     render();
@@ -478,6 +557,10 @@ function bindEvents() {
   });
 
   el.boardSvg.addEventListener("click", (event) => {
+    if (suppressBoardClick) {
+      suppressBoardClick = false;
+      return;
+    }
     const clueId = event.target.dataset.clueId;
     const edge = event.target.dataset.edge;
     const vertex = event.target.dataset.vertex;
@@ -505,15 +588,24 @@ function bindEvents() {
       render();
       return;
     }
-    if (edge && currentTool === "edge") {
+    if (edge && currentTool === "join") {
       const [a, b] = parseEdgeKey(edge);
-      commitPuzzle(cycleEdgeConstraint(puzzle, a, b), `Changed edge ${cellLabel(a, puzzle.width)}-${cellLabel(b, puzzle.width)}`);
+      const joined = puzzle.edges[edge]?.state === "join";
+      // A joined border is not a wall, so it cannot keep a border effect.
+      const next = joined ? setEdgeState(puzzle, a, b, null) : removeBorderEffects(setEdgeState(puzzle, a, b, "join"), a, b);
+      commitPuzzle(next, `${joined ? "Cleared" : "Set"} join ${cellLabel(a, puzzle.width)}-${cellLabel(b, puzzle.width)}`);
       render();
       return;
     }
-    if (edge && currentTool === "relation") {
+    if (edge && currentTool === "eraseClue") {
       const [a, b] = parseEdgeKey(edge);
-      const ruleId = el.relationRuleInput.value;
+      if (!deleteClueAtTarget({ type: "edge", a, b })) renderStatus("No relation clue on that border.", "warn");
+      render();
+      return;
+    }
+    if (edge && isRelationTool(currentTool)) {
+      const [a, b] = parseEdgeKey(edge);
+      const ruleId = currentTool;
       commitPuzzle(upsertRelationClue(ruleId, a, b), `Placed ${ruleLabel(ruleId)} relation clue`);
       relationFirstCell = null;
       renderStatus(`${ruleLabel(ruleId)} relation clue placed on an edge.`, "good");
@@ -524,9 +616,11 @@ function bindEvents() {
     handleCellClick(Number(cell));
   });
 
-  el.solveButton.addEventListener("click", () => {
+  el.solveButton.addEventListener("click", async () => {
     updateRulesFromForm(false, { recordHistory: false });
-    const result = solvePuzzle(puzzle, { limit: 2, maxNodes: maxNodes() });
+    const solved = puzzle;
+    const result = await runSolverTask("solve", { limit: 2, maxNodes: maxNodes(), maxMillis: maxMillis() }, "Solving…");
+    if (!result || puzzle !== solved) return;
     currentSolution = result.solutions[0] ?? null;
     lastStep = null;
     el.applyStepButton.disabled = true;
@@ -534,18 +628,22 @@ function bindEvents() {
     render();
   });
 
-  el.nextStepButton.addEventListener("click", () => {
+  el.nextStepButton.addEventListener("click", async () => {
     updateRulesFromForm(false, { recordHistory: false });
-    const result = findNextLogicalStep(puzzle, { maxNodes: maxNodes() });
+    const asked = puzzle;
+    const result = await runSolverTask("nextStep", { maxNodes: maxNodes(), maxMillis: maxMillis() }, "Looking for the next step…");
+    if (!result || puzzle !== asked) return;
     lastStep = result.step ?? null;
     el.applyStepButton.disabled = !isStepApplyable(lastStep);
     showStepResult(result);
     render();
   });
 
-  el.explainAllButton.addEventListener("click", () => {
+  el.explainAllButton.addEventListener("click", async () => {
     updateRulesFromForm(false, { recordHistory: false });
-    const result = explainAllLogicalSteps(puzzle, { maxNodes: maxNodes() });
+    const asked = puzzle;
+    const result = await runSolverTask("explainAll", { maxNodes: maxNodes(), maxMillis: maxMillis() }, "Building the explanation…");
+    if (!result || puzzle !== asked) return;
     explanationTrace = result.steps;
     commitPuzzle(result.puzzle, "Applied full explanation trace");
     lastStep = null;
@@ -553,6 +651,8 @@ function bindEvents() {
     renderStatus(`Built ${result.steps.length} explanation step${result.steps.length === 1 ? "" : "s"}.`, result.steps.length ? "good" : "warn");
     render();
   });
+
+  el.cancelSolveButton.addEventListener("click", cancelSolverTask);
 
   el.applyStepButton.addEventListener("click", () => {
     if (!lastStep) return;
@@ -728,8 +828,13 @@ function handleCellClick(cell) {
     return;
   }
 
-  if (currentTool === "relation") {
+  if (isRelationTool(currentTool)) {
     handleRelationCellClick(cell);
+    return;
+  }
+
+  if (currentTool === "join") {
+    renderStatus("Join border: click a border between two cells, not the cell itself.", "warn");
     return;
   }
 
@@ -759,7 +864,7 @@ function handleRelationCellClick(cell) {
     return;
   }
 
-  const ruleId = el.relationRuleInput.value;
+  const ruleId = currentTool;
   if (!areCellsOrthogonallyAdjacent(relationFirstCell, cell)) {
     renderStatus(
       `${ruleLabel(ruleId)} relation clues are edge-adjacent. Click an orthogonally adjacent cell sharing an edge with ${cellLabel(relationFirstCell, puzzle.width)}.`,
@@ -775,18 +880,25 @@ function handleRelationCellClick(cell) {
   render();
 }
 
+/**
+ * Copies the rule fields into the puzzle. Precision, Rose Windows and Shape Bank
+ * are switched on by their value, so their fields only apply while the rule is
+ * on (or when options.enable names it). That way a rule that is off keeps its
+ * last value in the field, ready for when it is switched back on.
+ */
 function updateRulesFromForm(doRender = true, options = {}) {
+  const on = (id) => isRuleActive(id) || (options.enable ?? []).includes(id);
   const next = {
     ...puzzle,
     rules: {
       ...puzzle.rules,
-      area: Math.max(0, Number(el.areaInput.value) || 0),
-      roseLabels: String(el.roseInput.value ?? "").toUpperCase().replace(/[^A-Z0-9]/g, ""),
+      area: on("precision") ? Math.max(1, Number(el.areaInput.value) || 1) : 0,
+      roseLabels: on("rose_window") ? sanitizeRoseLabels(el.roseInput.value) : "",
       allowRotations: el.rotationsInput.checked,
       allowReflections: el.reflectionsInput.checked,
       shapeEquivalenceAllowRotations: el.shapeEquivRotationsInput.checked,
       shapeEquivalenceAllowReflections: el.shapeEquivReflectionsInput.checked,
-      shapeBankText: el.shapeBankInput.value
+      shapeBankText: on("shape_bank") ? el.shapeBankInput.value : ""
     }
   };
   if (options.recordHistory === false) {
@@ -802,20 +914,35 @@ function updateRulesFromForm(doRender = true, options = {}) {
 function syncFormFromPuzzle() {
   el.widthInput.value = String(puzzle.width);
   el.heightInput.value = String(puzzle.height);
-  el.areaInput.value = String(puzzle.rules.area ?? 0);
-  el.roseInput.value = puzzle.rules.roseLabels ?? "";
+  updateBoardSizeWarning();
+  // A switched-off rule keeps its last value in the field.
+  if (Number(puzzle.rules.area) > 0) el.areaInput.value = String(puzzle.rules.area);
+  if (puzzle.rules.roseLabels) el.roseInput.value = puzzle.rules.roseLabels;
   el.rotationsInput.checked = puzzle.rules.allowRotations !== false;
   el.reflectionsInput.checked = puzzle.rules.allowReflections !== false;
   el.shapeEquivRotationsInput.checked = puzzle.rules.shapeEquivalenceAllowRotations !== false;
   el.shapeEquivReflectionsInput.checked = puzzle.rules.shapeEquivalenceAllowReflections !== false;
-  el.shapeBankInput.value = puzzle.rules.shapeBankText ?? "";
+  if (puzzle.rules.shapeBankText) el.shapeBankInput.value = puzzle.rules.shapeBankText;
   updateTraceControls();
   updateRelationHint();
 }
 
+function isRelationTool(tool) {
+  return RELATION_TOOLS.includes(tool);
+}
+
+/** Shows a small advisory under the size fields for large boards; never blocks resizing. */
+function updateBoardSizeWarning() {
+  const width = parseBoardDimension(el.widthInput.value, puzzle.width);
+  const height = parseBoardDimension(el.heightInput.value, puzzle.height);
+  const warning = boardSizeWarning(width, height);
+  el.boardSizeWarning.textContent = warning;
+  el.boardSizeWarning.hidden = !warning;
+}
+
 function setCurrentTool(tool, doRender = true) {
+  if (tool !== currentTool) relationFirstCell = null;
   currentTool = tool;
-  if (tool !== "relation") relationFirstCell = null;
   document.querySelectorAll(".tool").forEach((button) => {
     button.classList.toggle("active", button.dataset.tool === tool);
   });
@@ -838,6 +965,23 @@ function setRuleEnabled(id, enabled) {
   puzzle = previous;
   commitPuzzle(next, `${enabled ? "Enabled" : "Disabled"} ${rule.label}`, { syncForm: true });
   render();
+  const field = enabled ? { precision: el.areaInput, rose_window: el.roseInput }[id] : null;
+  if (field) {
+    field.focus();
+    field.select();
+  }
+}
+
+function sanitizeRoseLabels(value) {
+  return String(value ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function loadRuleFilter() {
+  try {
+    return localStorage.getItem(RULE_FILTER_KEY) === "active" ? "active" : "all";
+  } catch {
+    return "all";
+  }
 }
 
 function enableRule(id) {
@@ -846,7 +990,7 @@ function enableRule(id) {
     return;
   }
   if (id === "rose_window") {
-    puzzle.rules.roseLabels = puzzle.rules.roseLabels || el.roseInput.value || "A";
+    puzzle.rules.roseLabels = puzzle.rules.roseLabels || sanitizeRoseLabels(el.roseInput.value) || "A";
     return;
   }
   if (id === "shape_bank") {
@@ -885,16 +1029,9 @@ function enableRule(id) {
     setCurrentTool("watchtower", false);
     return;
   }
-  if (id === "gemini" || id === "delta" || id === "difference") {
+  if (isRelationTool(id)) {
     puzzle.rules[id] = puzzle.rules[id] ?? {};
-    el.relationRuleInput.value = id;
-    setCurrentTool("relation", false);
-    return;
-  }
-  if (id === "inequality") {
-    puzzle.rules.inequality = puzzle.rules.inequality ?? {};
-    el.relationRuleInput.value = "inequality";
-    setCurrentTool("relation", false);
+    setCurrentTool(id, false);
     return;
   }
   if (id === "range") {
@@ -964,6 +1101,103 @@ function commitPuzzle(nextPuzzle, label = "Edited puzzle", options = {}) {
   renderHistoryControls();
 }
 
+let gameImportEntries = [];
+
+function bindGameImport() {
+  el.importGameButton.addEventListener("click", () => {
+    el.gameImportStatus.textContent = "";
+    el.gameImportDialog.showModal();
+  });
+  el.gameFolderButton.addEventListener("click", () => el.gameFolderInput.click());
+  el.gameFileButton.addEventListener("click", () => el.gameFileInput.click());
+  el.gameFolderInput.addEventListener("change", () => loadGamePuzzleFiles(el.gameFolderInput));
+  el.gameFileInput.addEventListener("change", () => loadGamePuzzleFiles(el.gameFileInput));
+  el.gamePuzzleList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-game-entry]");
+    if (!button) return;
+    const entry = gameImportEntries[Number(button.dataset.gameEntry)];
+    if (entry) importGamePuzzle(entry.text, entry.meta);
+  });
+  el.gamePasteImportButton.addEventListener("click", () => importGamePuzzle(el.gamePuzzleText.value, {}));
+  el.gameImportDialog.addEventListener("click", (event) => {
+    const copy = event.target.closest("[data-copy-text]");
+    if (!copy) return;
+    const text = document.getElementById(copy.dataset.copyText)?.textContent ?? "";
+    navigator.clipboard?.writeText(text).then(
+      () => {
+        copy.textContent = "Copied";
+        setTimeout(() => (copy.textContent = "Copy"), 1500);
+      },
+      () => (el.gameImportStatus.textContent = "Couldn't copy; select the path and copy it manually.")
+    );
+  });
+}
+
+async function loadGamePuzzleFiles(input) {
+  const groups = groupGamePuzzleFiles(input.files ?? []);
+  input.value = "";
+  if (groups.length === 0) {
+    gameImportEntries = [];
+    el.gamePuzzleList.innerHTML = "";
+    el.gameImportStatus.textContent = "No game puzzles found there. Pick the workshop folder, one puzzle's folder, or a file named \"puzzle\".";
+    return;
+  }
+  el.gameImportStatus.textContent = "Reading puzzles…";
+  gameImportEntries = await readGamePuzzleEntries(groups);
+  if (gameImportEntries.length === 1 && !gameImportEntries[0].error) {
+    importGamePuzzle(gameImportEntries[0].text, gameImportEntries[0].meta);
+    return;
+  }
+  el.gameImportStatus.textContent = `Found ${gameImportEntries.length} puzzles. Pick one to open it.`;
+  el.gamePuzzleList.innerHTML = gameImportEntries
+    .map((entry, index) => {
+      const details = entry.error
+        ? `<span class="game-puzzle-error">${escapeHtml(entry.error)}</span>`
+        : [
+            entry.author ? `by ${escapeHtml(entry.author)}` : "",
+            `${entry.width}×${entry.height}`,
+            entry.difficulty !== null && entry.difficulty !== undefined ? `difficulty ${entry.difficulty}` : ""
+          ].filter(Boolean).join(" · ");
+      return `<button type="button" class="game-puzzle-entry" data-game-entry="${index}" ${entry.error ? "disabled" : ""} title="${escapeHtml(entry.description)}">
+        <strong>${escapeHtml(entry.title)}</strong><span>${details}</span>
+      </button>`;
+    })
+    .join("");
+}
+
+/** Replaces the board with a puzzle read from the game's text format. Undo brings the old one back. */
+function importGamePuzzle(text, meta = {}) {
+  let parsed;
+  try {
+    parsed = parseGamePuzzle(text, meta);
+  } catch (error) {
+    el.gameImportStatus.textContent = error.message;
+    return;
+  }
+  const title = meta.title || "game puzzle";
+  selectedCell = null;
+  selectedClueId = null;
+  relationFirstCell = null;
+  explanationTrace = [];
+  commitPuzzle(parsed.puzzle, `Imported "${title}" from the game`, { syncForm: true });
+  if (meta.title) el.savedPuzzleNameInput.value = meta.title;
+  el.gameImportDialog.close();
+  const note = parsed.warnings.length ? ` Note: ${parsed.warnings.join(" ")}` : "";
+  renderStatus(`Imported "${title}" (${parsed.puzzle.width}×${parsed.puzzle.height}) from The Artisan of Glimmith.${note}`, parsed.warnings.length ? "warn" : "good");
+  render();
+}
+
+function resetPuzzle() {
+  selectedCell = null;
+  selectedClueId = null;
+  relationFirstCell = null;
+  explanationTrace = [];
+  setHotkeyMode(null);
+  commitPuzzle(createPuzzle(6, 6), "Reset puzzle", { syncForm: true });
+  renderStatus("Puzzle reset to a blank 6x6 board. Use Undo to bring it back.", "warn");
+  render();
+}
+
 function undoPuzzleEdit() {
   if (!canUndo(puzzleHistory)) return;
   puzzleHistory = undoHistory(puzzleHistory);
@@ -994,10 +1228,11 @@ function renderHistoryControls() {
 }
 
 function render() {
+  saveWorkingPuzzle(puzzle);
   renderHistoryControls();
   renderBoard();
   renderToolBanner();
-  renderRulePalette();
+  updateRulePalette();
   renderShapeBankList();
   renderShapeMiniGrid();
   renderPolyominoGrid();
@@ -1025,16 +1260,16 @@ function toolInfo(tool) {
       description: "Click an active cell to cycle symbols used by Rose Windows.",
       params: `Current cycle is blank, A, B, C, D. Click until the symbol is removed.`
     },
-    edge: {
-      name: "Cycle borders",
-      description: "Click a border between active cells to cycle cut, join, Gemini, and Delta edge marks.",
-      params: "Edge marks are removed by cycling back to unknown."
+    join: {
+      name: "Join border",
+      description: "Click a border between active cells to mark that both cells are in the same region.",
+      params: "Click a joined border again to clear it. Walls are drawn by dragging from corner to corner."
     },
-    relation: {
-      name: "Relation pair clue",
+    ...Object.fromEntries(RELATION_TOOLS.map((ruleId) => [ruleId, {
+      name: `${ruleLabel(ruleId)} clue`,
       description: "Click an edge, or click two edge-adjacent active cells, to add a relation clue between their eventual regions.",
-      params: `${ruleLabel(el.relationRuleInput.value)}${relationToolParameterText()}. Delete relation clues with Erase clue or the inspector.`
-    },
+      params: `${ruleLabel(ruleId)}${relationToolParameterText(ruleId)}. Delete relation clues with Erase clue, the Delete key, or the inspector.`
+    }])),
     areaNumber: {
       name: "Area number clue",
       description: "Click an active cell to place or replace its Area Number clue.",
@@ -1063,109 +1298,150 @@ function toolInfo(tool) {
     eraseClue: {
       name: "Erase clue",
       description: "Click an Area Number, Polyomino, Palisade, Compass, Watchtower, or relation clue to remove it.",
-      params: "Cut and join edge constraints stay controlled by the Cycle borders tool."
+      params: "Click a clue or a border with a relation clue. Walls are erased by dragging along them starting on a wall; joins with the Join border tool."
     }
   };
   return common[tool] ?? common.cell;
 }
 
-function relationToolParameterText() {
-  if (el.relationRuleInput.value === "difference") return `, value ${Number(el.differenceValueInput.value) || 0}`;
-  if (el.relationRuleInput.value === "inequality") {
+function relationToolParameterText(ruleId) {
+  if (ruleId === "difference") return `, value ${Number(el.differenceValueInput.value) || 0}`;
+  if (ruleId === "inequality") {
     return el.inequalityDirectionInput.value === "gt" ? ", first region > second region" : ", first region < second region";
   }
   return "";
 }
 
-function renderRulePalette() {
+/**
+ * Builds the rule cards once. Each card holds its rule's toggle, a Place button
+ * for clue rules, and a settings slot that receives the matching block from
+ * #ruleSettingsStore. Cards are then updated in place by updateRulePalette(),
+ * so inputs inside them keep focus and listeners across renders.
+ */
+function buildRulePalette() {
   const seen = new Set();
-  const groups = RULE_GROUPS.map((group) => {
-    const cards = group.ids
-      .filter((id) => RULE_REGISTRY[id])
-      .map((id) => {
-        seen.add(id);
-        return ruleCardHtml(RULE_REGISTRY[id]);
-      })
-      .join("");
-    return `<section class="rule-group">
-      <h3>${escapeHtml(group.title)}</h3>
-      <div class="rule-group-grid">${cards}</div>
+  const groupHtml = (title, ids) => `<section class="rule-group" data-rule-group="${escapeHtml(title)}">
+      <h3>${escapeHtml(title)}</h3>
+      <div class="group-settings-slot"></div>
+      <div class="rule-group-grid">${ids.map((id) => ruleCardHtml(RULE_REGISTRY[id])).join("")}</div>
     </section>`;
+  const groups = RULE_GROUPS.map((group) => {
+    const ids = group.ids.filter((id) => RULE_REGISTRY[id]);
+    ids.forEach((id) => seen.add(id));
+    return groupHtml(group.title, ids);
   });
-  const ungrouped = Object.values(RULE_REGISTRY)
-    .filter((rule) => !seen.has(rule.id))
-    .map(ruleCardHtml)
-    .join("");
-  el.rulePalette.innerHTML = `${groups.join("")}${ungrouped ? `<section class="rule-group"><h3>Other</h3><div class="rule-group-grid">${ungrouped}</div></section>` : ""}`;
+  const ungrouped = Object.keys(RULE_REGISTRY).filter((id) => !seen.has(id));
+  if (ungrouped.length) groups.push(groupHtml("Other", ungrouped));
+  el.rulePalette.innerHTML = groups.join("");
+
+  for (const block of [...el.ruleSettingsStore.querySelectorAll("[data-settings-for]")]) {
+    const slot = el.rulePalette.querySelector(`[data-rule-settings="${block.dataset.settingsFor}"]`);
+    if (slot) slot.append(block);
+  }
+  for (const block of [...el.ruleSettingsStore.querySelectorAll("[data-group-settings]")]) {
+    const slot = el.rulePalette.querySelector(`[data-rule-group="${block.dataset.groupSettings}"] .group-settings-slot`);
+    if (slot) slot.append(block);
+  }
 }
 
 function ruleCardHtml(rule) {
-  const active = isRuleActive(rule.id);
   const disabled = !rule.implemented;
-  const badge = disabled ? rule.implementationStatus : active ? "active" : "available";
-  const checkbox = `<input type="checkbox" data-rule-toggle="${rule.id}" ${checkedAttr(active)} ${disabledAttr(disabled)} />`;
-  return `<section class="rule-card ${disabled ? "disabled" : ""}" data-rule-card="${escapeHtml(rule.id)}" aria-disabled="${disabled}" title="${escapeHtml(ruleHelp(rule.id))}">
+  const tool = RULE_PLACEMENT_TOOLS[rule.id];
+  const hasSettings = Boolean(el.ruleSettingsStore.querySelector(`[data-settings-for="${rule.id}"]`));
+  const placeButton = tool && !disabled
+    ? `<button type="button" class="rule-place" data-select-tool="${tool}" data-status="${escapeHtml(rule.label)} placement tool selected.">Place</button>`
+    : "";
+  const badge = disabled ? `<span class="rule-badge">${escapeHtml(rule.implementationStatus)}</span>` : "";
+  const disabledReason = disabled
+    ? `<p class="rule-help">${escapeHtml(
+        rule.implementationStatus === "blocked"
+          ? "Placeholder only. Solver rejects this rule because semantics are unverified."
+          : "Known and ready, but not implemented in the solver yet."
+      )}</p>`
+    : "";
+  return `<section class="rule-card ${disabled ? "disabled" : ""}" data-rule-card="${escapeHtml(rule.id)}" aria-disabled="${disabled}">
     <div class="rule-card-head">
-      <label>${checkbox}<span>${escapeHtml(rule.label)}</span></label>
-      <span class="rule-badge">${escapeHtml(badge)}</span>
+      <label class="rule-toggle"><input type="checkbox" data-rule-toggle="${escapeHtml(rule.id)}" ${disabledAttr(disabled)} /><span>${escapeHtml(rule.label)}</span></label>
+      <span class="rule-count" hidden></span>
+      ${badge}${placeButton}
     </div>
-    <p>${escapeHtml(ruleHelp(rule.id))}</p>
-    ${ruleControlsHtml(rule.id, active, disabled)}
+    <p class="rule-help">${escapeHtml(ruleHelp(rule.id))}</p>
+    ${disabledReason}
+    ${hasSettings ? `<div class="rule-settings" data-rule-settings="${escapeHtml(rule.id)}" hidden></div>` : ""}
   </section>`;
 }
 
-function ruleControlsHtml(id, active, disabled) {
-  if (disabled) {
-    const reason =
-      RULE_REGISTRY[id].implementationStatus === "blocked"
-        ? "Placeholder only. Solver rejects this rule because semantics are unverified."
-        : "Known and ready, but not implemented in the solver yet.";
-    return `<div class="rule-controls"><p>${escapeHtml(reason)}</p></div>`;
+/** Syncs every card with the puzzle: on/off, clue counts, open settings, current tool, and the filter. */
+function updateRulePalette() {
+  const showActiveOnly = ruleFilter === "active";
+  let activeCount = 0;
+  let visibleCount = 0;
+  for (const card of el.rulePalette.querySelectorAll("[data-rule-card]")) {
+    const id = card.dataset.ruleCard;
+    const active = isRuleActive(id);
+    const toolHere = Boolean(RULE_PLACEMENT_TOOLS[id]) && RULE_PLACEMENT_TOOLS[id] === currentTool;
+    const focused = card.contains(document.activeElement) && document.activeElement !== document.body;
+    if (active) activeCount += 1;
+
+    const toggle = card.querySelector("[data-rule-toggle]");
+    toggle.checked = active;
+    card.classList.toggle("active", active);
+    card.classList.toggle("tool-current", toolHere);
+
+    const clueCount = (puzzle.clues ?? []).filter((clue) => clue.ruleId === id).length;
+    const countEl = card.querySelector(".rule-count");
+    countEl.hidden = clueCount === 0;
+    countEl.textContent = String(clueCount);
+    countEl.title = `${clueCount} clue${clueCount === 1 ? "" : "s"} placed`;
+    toggle.title = active && clueCount > 0 ? `Turning this off removes its ${clueCount} clue${clueCount === 1 ? "" : "s"}.` : "";
+
+    const place = card.querySelector(".rule-place");
+    if (place) {
+      place.classList.toggle("primary", toolHere);
+      place.textContent = toolHere ? "Placing" : "Place";
+    }
+
+    const settings = card.querySelector("[data-rule-settings]");
+    if (settings) settings.hidden = !(active || toolHere || focused);
+
+    card.hidden = showActiveOnly && !active && !toolHere && !focused;
+    if (!card.hidden) visibleCount += 1;
   }
-  if (id === "precision") return `<div class="rule-controls"><p>Edit with the Precision area field.</p></div>`;
-  if (id === "rose_window") return `<div class="rule-controls"><p>Edit required symbols with the Rose labels field.</p></div>`;
-  if (id === "shape_bank") return `<div class="rule-controls"><p>Use the mini-grid or raw Shape Bank text.</p></div>`;
-  if (id === "range" && active) {
-    const config = puzzle.rules.range ?? {};
-    return `<div class="rule-controls">
-      <label>Min area <input type="number" min="1" max="99" value="${escapeHtml(config.min ?? "")}" data-range-option="min" /></label>
-      <label>Max area <input type="number" min="1" max="99" value="${escapeHtml(config.max ?? "")}" data-range-option="max" /></label>
-    </div>`;
+  for (const group of el.rulePalette.querySelectorAll("[data-rule-group]")) {
+    group.hidden = !group.querySelector("[data-rule-card]:not([hidden])");
   }
-  if (id === "area_number") {
-    return `<div class="rule-controls"><button type="button" data-select-tool="areaNumber" data-status="Area Number placement tool selected.">Place area clues</button></div>`;
+  el.activeRuleCount.textContent = String(activeCount);
+  el.ruleFilterEmpty.hidden = visibleCount > 0;
+  syncRuleOptionInputs();
+}
+
+/** Range and Mingle Shape inputs mirror puzzle rules; a field being edited is left alone. */
+function syncRuleOptionInputs() {
+  const range = puzzle.rules.range ?? {};
+  for (const input of el.rulePalette.querySelectorAll("[data-range-option]")) {
+    if (input === document.activeElement) continue;
+    input.value = range[input.dataset.rangeOption] ?? "";
   }
-  if (id === "polyomino") {
-    return `<div class="rule-controls"><button type="button" data-select-tool="polyomino" data-status="Polyomino placement tool selected.">Place polyomino clues</button></div>`;
+  const mingle = puzzle.rules.mingle_shape ?? {};
+  const fallback = {
+    allowRotations: puzzle.rules.shapeEquivalenceAllowRotations,
+    allowReflections: puzzle.rules.shapeEquivalenceAllowReflections
+  };
+  for (const input of el.rulePalette.querySelectorAll("[data-mingle-option]")) {
+    const option = input.dataset.mingleOption;
+    input.checked = (mingle[option] ?? fallback[option] ?? true) !== false;
   }
-  if (id === "palisade") {
-    return `<div class="rule-controls"><button type="button" data-select-tool="palisade" data-status="Palisade placement tool selected.">Place Palisade clues</button></div>`;
+}
+
+function setRuleFilter(value) {
+  ruleFilter = value === "active" ? "active" : "all";
+  try {
+    localStorage.setItem(RULE_FILTER_KEY, ruleFilter);
+  } catch {
+    // Storage may be unavailable; the filter still works for this session.
   }
-  if (id === "compass") {
-    return `<div class="rule-controls"><button type="button" data-select-tool="compass" data-status="Compass placement tool selected.">Place Compass clues</button></div>`;
-  }
-  if (id === "watchtower" && active) {
-    return `<div class="rule-controls"><button type="button" data-select-tool="watchtower" data-status="Watchtower vertex placement tool selected.">Place Watchtower clues</button></div>`;
-  }
-  if ((id === "bricky" || id === "loopy") && active) {
-    return `<div class="rule-controls"><p>Global boundary-vertex rule. No placement tool needed.</p></div>`;
-  }
-  if (id === "gemini" || id === "delta" || id === "difference" || id === "inequality") {
-    return `<div class="rule-controls"><button type="button" data-select-tool="relation" data-relation-rule="${id}" data-status="${escapeHtml(ruleLabel(id))} relation tool selected.">Place relation clue</button></div>`;
-  }
-  if (id === "mingle_shape" && active) {
-    const config = puzzle.rules.mingle_shape ?? {};
-    const rotations = config.allowRotations ?? puzzle.rules.shapeEquivalenceAllowRotations ?? true;
-    const reflections = config.allowReflections ?? puzzle.rules.shapeEquivalenceAllowReflections ?? true;
-    return `<div class="rule-controls">
-      <label><input type="checkbox" data-mingle-option="allowRotations" ${checkedAttr(rotations !== false)} /> Rotation equivalence</label>
-      <label><input type="checkbox" data-mingle-option="allowReflections" ${checkedAttr(reflections !== false)} /> Reflection equivalence</label>
-    </div>`;
-  }
-  if (["match", "mismatch", "solitude", "size_separation", "boxy", "non_boxy"].includes(id) && active) {
-    return `<div class="rule-controls"><p>This global rule is active. Use JSON export/import for advanced parameters.</p></div>`;
-  }
-  return "";
+  for (const input of el.ruleFilter.querySelectorAll("input[name='ruleFilter']")) input.checked = input.value === ruleFilter;
+  updateRulePalette();
 }
 
 function renderShapeBankList() {
@@ -1512,6 +1788,7 @@ function renderBoard() {
 
   html += relationCluesSvg();
   html += boundaryGraphOverlaySvg();
+  let edgeBadges = "";
 
   for (const [a, b] of activeAdjacencyEdges(puzzle)) {
     const key = edgeKey(a, b);
@@ -1523,24 +1800,49 @@ function renderBoard() {
       const cssType = isStep && lastStep ? lastStep.state : visualType;
       html += `<line class="edge-visible edge-${cssType}" x1="${line.x1}" y1="${line.y1}" x2="${line.x2}" y2="${line.y2}"></line>`;
       if (constraint.relation) {
-        const text = constraint.relation === "sameShape" ? "G" : "D";
-        html += `<text class="edge-label" x="${line.mx}" y="${line.my}">${text}</text>`;
+        const gemini = constraint.relation === "sameShape";
+        edgeBadges += edgeBadgeSvg(line.mx, line.my, gemini ? "G" : "D", gemini ? "badge-gemini" : "badge-delta");
       }
       if (isStep && lastStep?.state) {
-        const text = lastStep.state === "join" ? "J" : "C";
-        html += `<text class="edge-label" x="${line.mx}" y="${line.my}">${text}</text>`;
+        const join = lastStep.state === "join";
+        edgeBadges += edgeBadgeSvg(line.mx, line.my, join ? "J" : "C", join ? "badge-join" : "badge-cut");
       }
     }
     html += `<line class="edge-hit" data-edge="${key}" x1="${line.x1}" y1="${line.y1}" x2="${line.x2}" y2="${line.y2}"><title>Border ${cellLabel(a, puzzle.width)}-${cellLabel(b, puzzle.width)}</title></line>`;
   }
+  html += edgeBadges;
+  html += relationClueLabelsSvg();
 
   html += vertexHitTargetsSvg();
   html += vertexCluesSvg();
+  html += `<g class="hover-layer"></g>`;
 
   el.boardSvg.setAttribute("viewBox", `0 0 ${widthPx} ${heightPx}`);
   el.boardSvg.setAttribute("width", String(widthPx));
   el.boardSvg.setAttribute("height", String(heightPx));
   el.boardSvg.innerHTML = html;
+  renderHoverOverlay();
+}
+
+/**
+ * Draws the pointer highlight: a white diamond when a grid corner is targeted,
+ * otherwise an outline on the hovered tile. Never both.
+ */
+function renderHoverOverlay() {
+  const layer = el.boardSvg.querySelector(".hover-layer");
+  if (!layer) return;
+  const target = hoverTarget;
+  if (target?.type === "vertex") {
+    const cx = SVG_PAD + target.x * CELL;
+    const cy = SVG_PAD + target.y * CELL;
+    const s = VERTEX_DIAMOND_SIZE;
+    layer.innerHTML = `<polygon class="hover-vertex" points="${cx},${cy - s} ${cx + s},${cy} ${cx},${cy + s} ${cx - s},${cy}"></polygon>`;
+  } else if (target?.type === "cell" && target.cell < puzzle.width * puzzle.height) {
+    const { x, y } = xy(target.cell, puzzle.width);
+    layer.innerHTML = `<rect class="hover-cell" x="${SVG_PAD + x * CELL}" y="${SVG_PAD + y * CELL}" width="${CELL}" height="${CELL}" rx="4"></rect>`;
+  } else {
+    layer.innerHTML = "";
+  }
 }
 
 function traceImageSvg(widthPx, heightPx) {
@@ -1595,7 +1897,7 @@ function polyominoClueShapeSvg(clue, rx, ry) {
   const y0 = ry + (CELL - height) / 2;
   const attrs = `data-clue-id="${escapeHtml(clue.id)}" data-cell="${clue.location.cell}"`;
   const rects = shape
-    .map(([x, y]) => `<rect ${attrs} x="${x0 + x * unit + 1}" y="${y0 + y * unit + 1}" width="${Math.max(1, unit - 2)}" height="${Math.max(1, unit - 2)}" rx="3"></rect>`)
+    .map(([x, y]) => `<rect class="poly-clue-cell" ${attrs} x="${x0 + x * unit + 1}" y="${y0 + y * unit + 1}" width="${Math.max(1, unit - 2)}" height="${Math.max(1, unit - 2)}" rx="3"></rect>`)
     .join("");
   return `<g class="poly-clue-shape" ${attrs}>
     <title>Polyomino clue shape</title>
@@ -1604,20 +1906,52 @@ function polyominoClueShapeSvg(clue, rx, ry) {
   </g>`;
 }
 
+function relationClueCenters(clue) {
+  const cells = relationCellsFromClue(clue);
+  if (!cells) return null;
+  const left = cellCenter(cells[0]);
+  const right = cellCenter(cells[1]);
+  return { left, right, mx: (left.x + right.x) / 2, my: (left.y + right.y) / 2 };
+}
+
+function visibleRelationClues() {
+  return (puzzle.clues ?? []).filter((clue) => clue.type === "relation" && clue.source !== "edgeConstraints");
+}
+
+/** Dashed connector lines; drawn under walls. */
 function relationCluesSvg() {
   let html = "";
-  for (const clue of puzzle.clues ?? []) {
-    if (clue.type !== "relation" || clue.source === "edgeConstraints") continue;
-    const cells = relationCellsFromClue(clue);
-    if (!cells) continue;
-    const left = cellCenter(cells[0]);
-    const right = cellCenter(cells[1]);
-    const mx = (left.x + right.x) / 2;
-    const my = (left.y + right.y) / 2;
+  for (const clue of visibleRelationClues()) {
+    const centers = relationClueCenters(clue);
+    if (!centers) continue;
+    const { left, right } = centers;
     html += `<line class="relation-clue-line" data-clue-id="${escapeHtml(clue.id)}" x1="${left.x}" y1="${left.y}" x2="${right.x}" y2="${right.y}"><title>${escapeHtml(ruleLabel(clue.ruleId))} relation clue</title></line>`;
-    html += `<text class="relation-clue-label" data-clue-id="${escapeHtml(clue.id)}" x="${mx}" y="${my}">${escapeHtml(relationClueLabel(clue))}</text>`;
   }
   return html;
+}
+
+/** Relation labels; drawn over walls so they stay readable on any wall color. */
+function relationClueLabelsSvg() {
+  let html = "";
+  for (const clue of visibleRelationClues()) {
+    const centers = relationClueCenters(clue);
+    if (!centers) continue;
+    html += edgeBadgeSvg(centers.mx, centers.my, relationClueLabel(clue), `badge-${clue.ruleId}`);
+  }
+  return html;
+}
+
+/**
+ * A small pill-shaped label on a border: solid background, colored outline,
+ * ink-colored text. Clicks pass through to the border underneath.
+ */
+function edgeBadgeSvg(x, y, text, typeClass = "") {
+  const label = String(text);
+  const height = 16;
+  const width = Math.max(height, 8 + label.length * 7);
+  return `<g class="edge-badge ${typeClass}">`
+    + `<rect x="${x - width / 2}" y="${y - height / 2}" width="${width}" height="${height}" rx="${height / 2}"></rect>`
+    + `<text x="${x}" y="${y}">${escapeHtml(label)}</text></g>`;
 }
 
 function vertexCluesSvg() {
@@ -1666,7 +2000,7 @@ function vertexHitTargetsSvg() {
       const key = vertexKey(x, y);
       const degree = degreeByKey.get(key);
       const title = degree === undefined ? `Vertex (${x}, ${y})` : `Vertex (${x}, ${y}), border degree ${degree}`;
-      html += `<circle class="vertex-hit" data-vertex="${key}" cx="${SVG_PAD + x * CELL}" cy="${SVG_PAD + y * CELL}" r="10"><title>${escapeHtml(title)}</title></circle>`;
+      html += `<circle class="vertex-hit" data-vertex="${key}" cx="${SVG_PAD + x * CELL}" cy="${SVG_PAD + y * CELL}" r="${VERTEX_HOVER_RADIUS}"><title>${escapeHtml(title)}</title></circle>`;
     }
   }
   return html;
@@ -1724,10 +2058,8 @@ function upsertRelationClue(ruleId, firstCell, secondCell) {
   if (ruleId === "inequality") {
     clue.params = { direction: el.inequalityDirectionInput.value === "gt" ? "gt" : "lt" };
   }
-  const rules = { ...puzzle.rules, [ruleId]: puzzle.rules[ruleId] ?? {} };
-  const clues = (puzzle.clues ?? []).filter((existing) => existing.id !== clue.id);
-  clues.push(clue);
-  return normalizePuzzle({ ...puzzle, rules, clues });
+  // Replaces any other effect on this border and makes the border a wall.
+  return placeBorderEffect(puzzle, clue);
 }
 
 function upsertVertexClue(ruleId, vertex, data) {
@@ -1787,7 +2119,7 @@ function relationCellsFromClue(clue) {
 function relationClueLabel(clue) {
   if (clue.ruleId === "gemini") return "G";
   if (clue.ruleId === "delta") return "D";
-  if (clue.ruleId === "difference") return `Diff ${clue.value ?? clue.params?.difference ?? 0}`;
+  if (clue.ruleId === "difference") return String(clue.value ?? clue.params?.difference ?? 0);
   if (clue.ruleId === "inequality") return clue.params?.direction === "gt" ? ">" : "<";
   return ruleLabel(clue.ruleId);
 }
@@ -1877,12 +2209,13 @@ function updateTraceControls() {
 }
 
 function updateRelationHint() {
-  if (currentTool !== "relation") {
-    el.relationPickHint.textContent = "Choose Relation pair clue, then click an edge or two edge-adjacent active cells.";
+  el.relationPickHint.hidden = !isRelationTool(currentTool);
+  if (!isRelationTool(currentTool)) {
+    el.relationPickHint.textContent = "Choose Gemini, Delta, Difference or Inequality, then click an edge or two edge-adjacent active cells.";
     return;
   }
   if (relationFirstCell === null) {
-    el.relationPickHint.textContent = `Click an edge, or click the first cell, for an edge-adjacent ${ruleLabel(el.relationRuleInput.value)} relation clue.`;
+    el.relationPickHint.textContent = `Click an edge, or click the first cell, for an edge-adjacent ${ruleLabel(currentTool)} relation clue.`;
     return;
   }
   el.relationPickHint.textContent = `First cell: ${cellLabel(relationFirstCell, puzzle.width)}. Click an edge-adjacent second cell.`;
@@ -1919,7 +2252,8 @@ function ruleLabel(id) {
 
 function showSolveResult(result) {
   const errors = result.errors.length ? `\n\nWarnings/errors:\n${result.errors.join("\n")}` : "";
-  const base = `Status: ${humanStatus(result.status)}\nCandidates: ${result.candidates.length}\nSearch nodes: ${result.nodeCount}${result.truncated ? "\nSearch stopped at a limit or after enough solutions." : ""}`;
+  const engine = result.candidatePlan?.kind === "borders" ? "Solver: border search" : `Candidates: ${result.candidates.length}`;
+  const base = `Status: ${humanStatus(result.status)}\n${engine}\nSearch nodes: ${result.nodeCount}${result.truncated ? "\nSearch stopped at a limit or after enough solutions." : ""}`;
 
   if (!currentSolution) {
     renderStatus(base + errors, result.status === "no_solution" ? "bad" : "warn");
@@ -1975,6 +2309,14 @@ function showNoSolutionDebug(result) {
 
 function noSolutionDebugHtml(result) {
   const validation = validatePuzzle(puzzle);
+  if (result.candidatePlan?.kind === "borders") {
+    const activeRules = Object.values(RULE_REGISTRY).filter((rule) => isRuleActive(rule.id)).map((rule) => rule.label);
+    return [
+      debugSection("Validation", validation.errors.length ? validation.errors : ["No validation errors."]),
+      debugSection("Solver", ["The border search tried every possibility and none satisfies all rules.", ...(result.errors ?? [])]),
+      debugSection("Active rules", activeRules.length ? activeRules : ["No rules are active."])
+    ].join("");
+  }
   let diagnostics = null;
   let violations = [];
   const diagnosticLimit = Math.min(maxNodes(), 20000);
@@ -2047,6 +2389,90 @@ function regionColor(regionId) {
   return `hsl(${hue}, 78%, 82%)`;
 }
 
+function maxMillis() {
+  return Math.max(1, Number(el.maxSecondsInput.value) || 60) * 1000;
+}
+
+// ---- Solver worker: long searches run off the main thread and can be cancelled.
+
+let solverWorker = null;
+let solverTaskId = 0;
+let pendingSolverTask = null;
+
+function solverWorkerInstance() {
+  if (solverWorker) return solverWorker;
+  try {
+    solverWorker = new Worker(new URL("./solver-worker.js", import.meta.url), { type: "module" });
+  } catch {
+    solverWorker = null;
+    return null;
+  }
+  solverWorker.addEventListener("message", (event) => {
+    const { id, ok, result, error } = event.data;
+    if (!pendingSolverTask || pendingSolverTask.id !== id) return;
+    const task = pendingSolverTask;
+    finishSolverTask();
+    if (ok) task.resolve(result);
+    else {
+      renderStatus(`Solver error: ${error}`, "bad");
+      task.resolve(null);
+    }
+  });
+  solverWorker.addEventListener("error", (event) => {
+    // Module workers are unavailable (e.g. opened from file://): run on the page instead.
+    event.preventDefault();
+    const task = pendingSolverTask;
+    solverWorker.terminate();
+    solverWorker = false;
+    finishSolverTask();
+    if (task) task.resolve(runSolverTaskHere(task.task, task.options));
+  });
+  return solverWorker;
+}
+
+/** Same work as the worker, on the page; used only when workers are unavailable. */
+function runSolverTaskHere(task, options) {
+  const snapshot = JSON.parse(JSON.stringify(puzzle));
+  if (task === "solve") return solvePuzzle(snapshot, options);
+  if (task === "nextStep") return findNextLogicalStep(snapshot, options);
+  return explainAllLogicalSteps(snapshot, options);
+}
+
+/** Runs a solver task in the worker. Resolves with the result, or null if cancelled or failed. */
+function runSolverTask(task, options, busyText) {
+  if (pendingSolverTask) cancelSolverTask();
+  const worker = solverWorker === false ? null : solverWorkerInstance();
+  if (!worker) return Promise.resolve(runSolverTaskHere(task, options));
+  const id = ++solverTaskId;
+  setSolverBusy(true);
+  renderStatus(`${busyText} (up to ${Math.round(options.maxMillis / 1000)} s; Cancel stops it)`, "");
+  return new Promise((resolve) => {
+    pendingSolverTask = { id, task, options, resolve };
+    worker.postMessage({ id, task, puzzle: JSON.parse(JSON.stringify(puzzle)), options });
+  });
+}
+
+function cancelSolverTask() {
+  if (!pendingSolverTask) return;
+  const task = pendingSolverTask;
+  // Terminating is the only way to stop a running search; a fresh worker starts next time.
+  solverWorker?.terminate();
+  solverWorker = null;
+  finishSolverTask();
+  renderStatus("Stopped.", "warn");
+  task.resolve(null);
+}
+
+function finishSolverTask() {
+  pendingSolverTask = null;
+  setSolverBusy(false);
+}
+
+function setSolverBusy(busy) {
+  el.cancelSolveButton.hidden = !busy;
+  for (const button of [el.solveButton, el.nextStepButton, el.explainAllButton]) button.disabled = busy;
+}
+
 function maxNodes() {
   return Math.max(1000, Number(el.maxNodesInput.value) || 250000);
 }
@@ -2070,4 +2496,251 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+// ---- In-game-editor hotkeys -------------------------------------------------
+
+function boardPointFromEvent(event) {
+  const ctm = el.boardSvg.getScreenCTM();
+  if (!ctm) return null;
+  const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(ctm.inverse());
+  return { x: point.x, y: point.y };
+}
+
+function setHotkeyMode(mode) {
+  hotkeyMode = mode;
+  clearTimeout(hotkeyModeTimer);
+  if (mode) hotkeyModeTimer = setTimeout(() => setHotkeyMode(null), HOTKEY_MODE_TIMEOUT_MS);
+  el.boardSvg.dataset.hotkeyMode = mode ?? "";
+}
+
+function bindHotkeys() {
+  el.boardSvg.addEventListener("pointermove", (event) => {
+    const point = boardPointFromEvent(event);
+    hoverTarget = point ? locateBoardPoint(point, puzzle) : null;
+    renderHoverOverlay();
+  });
+  el.boardSvg.addEventListener("pointerleave", () => {
+    hoverTarget = null;
+    renderHoverOverlay();
+  });
+
+  el.boardSvg.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    const point = boardPointFromEvent(event);
+    const target = point ? locateBoardPoint(point, puzzle) : null;
+    if (target?.cell === undefined) return;
+    handleCellClickWithTool(target.cell, "cell");
+  });
+
+  // Walls are drawn live: pressing on a corner starts a stroke, and every
+  // corner the pointer then reaches draws (or erases) the wall to it at once.
+  el.boardSvg.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    const point = boardPointFromEvent(event);
+    const target = point ? locateBoardPoint(point, puzzle) : null;
+    if (target?.type !== "vertex") return;
+    event.preventDefault();
+    wallStroke = { last: target, lastPoint: point, mode: null, changed: false, moved: false, segments: 0 };
+  });
+  el.boardSvg.addEventListener("pointermove", (event) => {
+    if (!wallStroke) return;
+    if (!(event.buttons & 1)) {
+      finishWallStroke();
+      return;
+    }
+    const point = boardPointFromEvent(event);
+    if (!point) return;
+    let redraw = false;
+    for (const corner of cornersCrossed(wallStroke.lastPoint, point, puzzle)) {
+      if (corner.x === wallStroke.last.x && corner.y === wallStroke.last.y) continue;
+      const result = applyWallSegment(puzzle, wallStroke.last, corner, wallStroke.mode);
+      wallStroke.mode = result.mode;
+      if (result.changed) {
+        if (!wallStroke.changed) clearComputed();
+        puzzle = result.puzzle;
+        wallStroke.changed = true;
+        wallStroke.segments += 1;
+        redraw = true;
+      }
+      wallStroke.last = corner;
+      wallStroke.moved = true;
+    }
+    wallStroke.lastPoint = point;
+    if (redraw) renderBoard();
+  });
+  window.addEventListener("pointerup", finishWallStroke);
+  window.addEventListener("pointercancel", finishWallStroke);
+
+  document.addEventListener("keydown", (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.target.closest?.("input, textarea, select, [contenteditable]")) return;
+    const action = resolveHotkey(event.key, {
+      target: hoverTarget,
+      mode: hotkeyMode,
+      width: puzzle.width,
+      currentPalisade: hoveredPalisadePattern()
+    });
+    if (!action) return;
+    event.preventDefault();
+    runHotkeyAction(action);
+  });
+}
+
+/** Ends a wall stroke: records it as one undo step and swallows the click that follows. */
+function finishWallStroke() {
+  const stroke = wallStroke;
+  if (!stroke) return;
+  wallStroke = null;
+  // A press on a corner is a wall gesture, so the trailing click must not also
+  // toggle a cell or hit a border. Watchtower keeps plain corner clicks.
+  if (stroke.moved || currentTool !== "watchtower") {
+    suppressBoardClick = true;
+    setTimeout(() => {
+      suppressBoardClick = false;
+    }, 0);
+  }
+  if (!stroke.changed) return;
+  const erased = stroke.mode === "erase";
+  commitPuzzle(puzzle, erased ? "Erased walls" : "Drew walls");
+  renderStatus(`${erased ? "Erased" : "Drew"} ${stroke.segments} wall segment${stroke.segments === 1 ? "" : "s"}.`, "good");
+  render();
+}
+
+function hoveredPalisadePattern() {
+  if (hoverTarget?.cell === undefined) return null;
+  const clue = (puzzle.clues ?? []).find((item) => item.ruleId === "palisade" && item.location?.cell === hoverTarget.cell);
+  return clue?.params?.pattern ?? null;
+}
+
+function handleCellClickWithTool(cell, tool) {
+  const previous = currentTool;
+  currentTool = tool;
+  try {
+    handleCellClick(cell);
+  } finally {
+    currentTool = previous;
+  }
+}
+
+function runHotkeyAction(action) {
+  const where = (cell) => cellLabel(cell, puzzle.width);
+  switch (action.type) {
+    case "clearMode":
+      setHotkeyMode(null);
+      renderStatus("Hotkey mode cleared.", "warn");
+      return;
+    case "setMode": {
+      setHotkeyMode(action.mode);
+      const hint = {
+        rose: "Rose Window: hover a cell and press 1-5.",
+        palisade: "Palisade: hover a cell and press 0-4 (2 twice for opposite).",
+        compass: "Compass: hover near a cell side and press 0-9."
+      }[action.mode];
+      renderStatus(hint, "good");
+      return;
+    }
+    case "selectRelation":
+      setCurrentTool(action.ruleId);
+      renderStatus(`${ruleLabel(action.ruleId)} selected. Hover a border and press the key, or click a border.`, "good");
+      return;
+    case "relation":
+      commitPuzzle(upsertRelationClue(action.ruleId, action.a, action.b), `Placed ${ruleLabel(action.ruleId)} relation clue`);
+      renderStatus(`${ruleLabel(action.ruleId)} relation clue placed on an edge.`, "good");
+      break;
+    case "difference":
+      el.differenceValueInput.value = String(action.value);
+      commitPuzzle(upsertRelationClue("difference", action.a, action.b), `Placed Difference ${action.value}`);
+      renderStatus(`Difference ${action.value} placed on an edge.`, "good");
+      break;
+    case "inequality":
+      el.inequalityDirectionInput.value = action.direction;
+      commitPuzzle(upsertRelationClue("inequality", action.a, action.b), "Placed Inequality clue");
+      renderStatus("Inequality clue placed on an edge.", "good");
+      break;
+    case "watchtower":
+      el.watchtowerValueInput.value = String(action.value);
+      commitPuzzle(upsertVertexClue("watchtower", action.vertex, { value: action.value }), `Placed Watchtower ${action.value}`);
+      selectedClueId = `watchtower:${action.vertex.x}:${action.vertex.y}`;
+      renderStatus(`Watchtower ${action.value} placed at vertex (${action.vertex.x}, ${action.vertex.y}).`, "good");
+      break;
+    case "polyomino":
+      if (action.cell === null) {
+        setCurrentTool("polyomino");
+        renderStatus("Polyomino tool selected. Draw the clue shape, then hover a cell and press P.", "good");
+        return;
+      }
+      handleCellClickWithTool(action.cell, "polyomino");
+      return;
+    case "areaNumber": {
+      const now = Date.now();
+      const chained = lastAreaDigit.cell === action.cell && now - lastAreaDigit.at < AREA_DIGIT_CHAIN_MS;
+      const value = chained ? Math.min(99, lastAreaDigit.value * 10 + action.digit) : action.digit;
+      lastAreaDigit = { cell: action.cell, value, at: now };
+      if (value < 1) {
+        renderStatus("Area numbers start at 1. Type 1-9, or two digits for 10 and up.", "warn");
+        return;
+      }
+      if (!puzzle.active[action.cell]) {
+        renderStatus(`Cell ${where(action.cell)} is inactive. Activate it before placing clues.`, "warn");
+        return;
+      }
+      el.areaClueValueInput.value = String(value);
+      commitPuzzle(upsertCellClue("area_number", action.cell, { value, params: { value } }), `Placed Area Number ${value} on ${where(action.cell)}`);
+      renderStatus(`Area Number ${value} placed on ${where(action.cell)}.`, "good");
+      break;
+    }
+    case "rose":
+      if (!puzzle.active[action.cell]) return;
+      commitPuzzle(setCellSymbol(puzzle, action.cell, action.symbol), `Set symbol ${action.symbol} on ${where(action.cell)}`);
+      renderStatus(`Rose Window symbol ${action.symbol} set on ${where(action.cell)}.`, "good");
+      setHotkeyMode(hotkeyMode);
+      break;
+    case "palisade":
+      if (!puzzle.active[action.cell]) return;
+      el.palisadePatternInput.value = action.pattern;
+      commitPuzzle(upsertCellClue("palisade", action.cell, { params: { pattern: action.pattern } }), `Placed Palisade on ${where(action.cell)}`);
+      renderStatus(`Palisade ${action.pattern} placed on ${where(action.cell)}.`, "good");
+      setHotkeyMode(hotkeyMode);
+      break;
+    case "compass": {
+      if (!puzzle.active[action.cell]) return;
+      const existing = (puzzle.clues ?? []).find((item) => item.ruleId === "compass" && item.location?.cell === action.cell);
+      const params = { ...(existing?.params ?? {}), [action.side]: action.value };
+      commitPuzzle(upsertCellClue("compass", action.cell, { params }), `Set Compass ${action.side} ${action.value} on ${where(action.cell)}`);
+      renderStatus(`Compass ${action.side} ${action.value} set on ${where(action.cell)}.`, "good");
+      setHotkeyMode(hotkeyMode);
+      break;
+    }
+    case "delete":
+      if (!deleteClueAtTarget(action.target)) {
+        renderStatus("No clue under the pointer.", "warn");
+        return;
+      }
+      break;
+    default:
+      return;
+  }
+  render();
+}
+
+function deleteClueAtTarget(target) {
+  const clues = puzzle.clues ?? [];
+  let remove = [];
+  let next = puzzle;
+  if (target.type === "vertex") {
+    remove = clues.filter((clue) => clue.type === "vertex" && Number(clue.location?.x) === target.x && Number(clue.location?.y) === target.y);
+  } else if (target.type === "edge") {
+    // Removes the effect but keeps the wall it sits on.
+    next = removeBorderEffects(puzzle, target.a, target.b);
+    if (next !== puzzle) remove.push(null);
+  } else if (target.type === "cell") {
+    remove = (cellCluesByCell().get(target.cell) ?? []).filter((clue) => ["area_number", "polyomino", "palisade", "compass"].includes(clue.ruleId));
+  }
+  if (remove.length === 0) return false;
+  const ids = new Set(remove.filter(Boolean).map((clue) => clue.id));
+  commitPuzzle({ ...next, clues: (next.clues ?? []).filter((clue) => !ids.has(clue.id)) }, "Removed clue");
+  selectedClueId = null;
+  renderStatus("Clue removed.", "good");
+  return true;
 }

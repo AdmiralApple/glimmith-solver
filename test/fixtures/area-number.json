@@ -6,7 +6,7 @@
       "expectedStatus": "unique_solution",
       "expectedSolutionCount": 1,
       "expectedRegionCount": 2,
-      "expectedForcedSteps": ["candidate_eliminated", "forced_region"],
+      "expectedForcedSteps": ["candidate_eliminated", "forced_region", "forced_cut", "forced_join"],
       "puzzle": {
         "width": 3,
         "height": 1,
@@ -29,7 +29,8 @@
         "width": 2,
         "height": 2,
         "clues": [
-          { "id": "two", "type": "cell", "ruleId": "area_number", "value": 2, "location": { "type": "cell", "cell": 0 } }
+          { "id": "two", "type": "cell", "ruleId": "area_number", "value": 2, "location": { "type": "cell", "cell": 0 } },
+          { "id": "two_b", "type": "cell", "ruleId": "area_number", "value": 2, "location": { "type": "cell", "cell": 3 } }
         ],
         "rules": { "area": 0 }
       }

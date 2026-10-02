@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node scripts/server.mjs",
     "dev": "node scripts/server.mjs",
-    "test": "node --test test",
+    "test": "node --test",
     "check": "node --test test"
   },
   "keywords": [

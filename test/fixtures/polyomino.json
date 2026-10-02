@@ -6,7 +6,7 @@
       "expectedStatus": "unique_solution",
       "expectedSolutionCount": 1,
       "expectedRegionCount": 2,
-      "expectedForcedSteps": ["forced_region"],
+      "expectedForcedSteps": ["forced_join", "forced_cut"],
       "puzzle": {
         "width": 2,
         "height": 2,
@@ -16,6 +16,13 @@
             "type": "cell",
             "ruleId": "polyomino",
             "location": { "type": "cell", "cell": 0 },
+            "params": { "shape": [[0, 0], [0, 1]], "allowRotations": false, "allowReflections": false }
+          },
+          {
+            "id": "vertical_b",
+            "type": "cell",
+            "ruleId": "polyomino",
+            "location": { "type": "cell", "cell": 1 },
             "params": { "shape": [[0, 0], [0, 1]], "allowRotations": false, "allowReflections": false }
           }
         ],
@@ -39,6 +46,13 @@
             "type": "cell",
             "ruleId": "polyomino",
             "location": { "type": "cell", "cell": 0 },
+            "params": { "shape": [[0, 0], [1, 0]], "allowRotations": true, "allowReflections": false }
+          },
+          {
+            "id": "domino_b",
+            "type": "cell",
+            "ruleId": "polyomino",
+            "location": { "type": "cell", "cell": 3 },
             "params": { "shape": [[0, 0], [1, 0]], "allowRotations": true, "allowReflections": false }
           }
         ],

@@ -70,6 +70,9 @@
 
 * { box-sizing: border-box; }
 
+/* The hidden attribute must win over component display rules (grid, flex). */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   min-width: 320px;
@@ -97,6 +100,133 @@ button.primary, .tool.active {
   background: var(--accent);
   border-color: var(--accent-strong);
   color: #fff;
+}
+
+button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+button.danger:hover {
+  background: var(--danger-bg);
+}
+
+.reset-button {
+  margin-left: 0.75rem;
+}
+
+.confirm-dialog {
+  width: min(26rem, calc(100vw - 2rem));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.25rem;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.confirm-dialog::backdrop {
+  background: rgba(10, 14, 18, 0.55);
+}
+
+.confirm-dialog h2 {
+  margin: 0 0 0.6rem;
+  font-size: 1.1rem;
+  color: var(--danger);
+}
+
+.confirm-dialog p {
+  margin: 0 0 0.75rem;
+  line-height: 1.45;
+}
+
+.game-import-dialog {
+  width: min(36rem, calc(100vw - 2rem));
+}
+
+.game-import-dialog h2 {
+  color: var(--ink);
+}
+
+.game-import-dialog form {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.game-import-dialog p {
+  margin: 0;
+}
+
+.game-paths {
+  display: grid;
+  gap: 0.2rem;
+  margin: 0;
+}
+
+.game-paths dt {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.game-paths dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.35rem;
+}
+
+.game-paths code {
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.game-paths button {
+  padding: 0.2rem 0.55rem;
+  font-size: 0.8rem;
+}
+
+.game-puzzle-list {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.game-puzzle-list:empty {
+  display: none;
+}
+
+.game-puzzle-entry {
+  display: grid;
+  gap: 0.1rem;
+  text-align: left;
+}
+
+.game-puzzle-entry span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.game-puzzle-error {
+  color: var(--danger);
+}
+
+.game-import-dialog textarea {
+  min-height: 6rem;
+  margin: 0.5rem 0;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
 }
 
 input, textarea, select {
@@ -267,7 +397,46 @@ textarea {
 }
 
 .tool {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
   text-align: left;
+}
+
+.size-warning {
+  margin: 0.4rem 0 0;
+  padding: 0.35rem 0.55rem;
+  border-left: 3px solid var(--warning);
+  border-radius: 4px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.tool-note {
+  margin: 0.35rem 0 0;
+}
+
+.tool-keys {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.2rem;
+}
+
+.tool-keys kbd {
+  font: inherit;
+  font-size: 0.72rem;
+  line-height: 1.3;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  color: inherit;
+  opacity: 0.8;
+  white-space: nowrap;
 }
 
 .tool-banner {
@@ -324,52 +493,127 @@ textarea {
   touch-action: manipulation;
 }
 
-.rule-palette, .rule-group-grid {
+.rule-filter {
+  align-self: start;
+  font-size: 0.85rem;
+}
+
+.rule-filter-count {
+  display: inline-block;
+  min-width: 1.2rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.rule-palette {
   display: grid;
-  gap: 0.55rem;
+  gap: 0.75rem;
 }
 
 .rule-group {
   display: grid;
-  gap: 0.45rem;
+  gap: 0.4rem;
 }
 
 .rule-group h3 {
-  margin: 0.5rem 0 0;
+  margin: 0.35rem 0 0;
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
+}
+
+.rule-group-grid {
+  display: grid;
+  gap: 0.4rem;
+}
+
+/* Settings shared by a whole group, e.g. Shape comparison for the Shapes group. */
+.group-settings {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+
+.group-settings-label {
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.group-settings label,
+.rule-settings label:not(.stacked) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 .rule-card {
   border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
   border-radius: 8px;
   background: var(--surface-soft);
-  padding: 0.65rem;
+  padding: 0.5rem 0.6rem;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.rule-card.active {
+  border-left-color: var(--accent);
+  background: var(--surface-raised);
+}
+
+/* The card whose clues the current board tool places. */
+.rule-card.tool-current {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .rule-card.disabled {
-  opacity: 0.82;
+  opacity: 0.7;
 }
 
 .rule-card-head {
   display: flex;
-  justify-content: space-between;
-  align-items: start;
-  gap: 0.5rem;
+  align-items: center;
+  gap: 0.45rem;
 }
 
-.rule-card label {
+.rule-toggle {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.45rem;
+  flex: 1;
+  min-width: 0;
   font-weight: 700;
+  cursor: pointer;
 }
 
-.rule-card p {
-  margin: 0.35rem 0 0;
+.rule-count {
+  min-width: 1.3rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.rule-place {
+  padding: 0.22rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.rule-help {
+  margin: 0.2rem 0 0 1.6rem;
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   line-height: 1.35;
 }
 
@@ -382,10 +626,67 @@ textarea {
   white-space: nowrap;
 }
 
-.rule-controls {
+.rule-settings {
   display: grid;
-  gap: 0.35rem;
-  margin-top: 0.45rem;
+  gap: 0.45rem;
+  margin: 0.5rem 0 0.1rem 1.6rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--border);
+  font-size: 0.86rem;
+}
+
+.rule-settings > div {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.rule-settings .hint {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.rule-settings .mini-editor,
+.rule-settings .advanced-panel {
+  background: var(--surface-soft);
+}
+
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.inline-field input[type="number"] {
+  width: 4.5rem;
+  padding: 0.3rem 0.45rem;
+}
+
+.inline-field input[type="text"] {
+  width: 8rem;
+  padding: 0.3rem 0.45rem;
+}
+
+.inline-field select {
+  width: auto;
+  padding: 0.3rem 0.45rem;
+}
+
+.inline-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.8rem;
+}
+
+.compass-fields {
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  gap: 0.35rem 0.9rem;
+}
+
+.relation-pick-hint {
+  margin: 0.35rem 0 0;
 }
 
 .mini-editor, .advanced-panel {
@@ -512,9 +813,24 @@ textarea {
   stroke-width: 3;
 }
 
-.cell:hover {
+/* Hover highlight is drawn by the board's hover layer, so a targeted corner
+   never also highlights the tile underneath it. */
+.hover-layer {
+  pointer-events: none;
+}
+
+.hover-cell {
+  fill: none;
   stroke: var(--accent-strong);
   stroke-width: 2;
+}
+
+.hover-vertex {
+  fill: #ffffff;
+  stroke: rgba(0, 0, 0, 0.7);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.45));
 }
 
 .cell-symbol {
@@ -553,7 +869,9 @@ textarea {
   cursor: pointer;
 }
 
-.poly-clue-shape rect {
+/* Only the shape's own squares are filled; the bounding-box hit target stays
+   transparent so the clue reads as its real shape, not a rectangle. */
+.poly-clue-cell {
   fill: var(--poly-bg);
   stroke: var(--surface);
   stroke-width: 1.5;
@@ -574,18 +892,30 @@ textarea {
   opacity: 0.9;
 }
 
-.relation-clue-label, .edge-label {
-  pointer-events: auto;
-  cursor: pointer;
-  text-anchor: middle;
-  dominant-baseline: middle;
-  font-size: 12px;
-  font-weight: 900;
-  fill: #fff;
-  stroke: rgba(0, 0, 0, 0.52);
-  stroke-width: 3;
-  paint-order: stroke;
+/* Border labels (G, D, difference numbers, < >) sit on a solid pill so they
+   stay readable on top of walls in either theme. */
+.edge-badge {
+  pointer-events: none;
 }
+
+.edge-badge rect {
+  fill: var(--surface);
+  stroke: var(--relation-line);
+  stroke-width: 1.5;
+}
+
+.edge-badge text {
+  text-anchor: middle;
+  dominant-baseline: central;
+  font-size: 11px;
+  font-weight: 800;
+  fill: var(--ink);
+}
+
+.edge-badge.badge-gemini rect { stroke: var(--gemini); }
+.edge-badge.badge-delta rect { stroke: var(--delta); }
+.edge-badge.badge-join rect { stroke: var(--join); }
+.edge-badge.badge-cut rect { stroke: var(--cut); }
 
 .watchtower-clue {
   pointer-events: auto;
@@ -637,7 +967,7 @@ textarea {
   fill: transparent;
   stroke: transparent;
   pointer-events: auto;
-  cursor: crosshair;
+  cursor: pointer;
 }
 
 .trace-image {

@@ -39,7 +39,7 @@ http://localhost:5173
 | Precision / exact area | Implemented | Every region candidate must have exactly `area` cells. |
 | Shape bank | Implemented | Enter polyomino coordinates; rotations/reflections are optional. |
 | Rose labels | Implemented | Each region must contain exactly one of every listed label, such as `ABCD`. |
-| Manual cut/join borders | Implemented | Click borders with the edge tool. |
+| Manual walls/join borders | Implemented | Drag corner to corner for walls; use the Join border tool for joins. |
 | Gemini / same shape | Implemented | Modeled as a relation on an edge between two regions. |
 | Delta / different shape | Implemented | Modeled as a relation on an edge between two regions. |
 | Next logic step | Implemented | Tests unknown borders by contradiction and returns a forced join/cut. |
@@ -56,9 +56,48 @@ T4: 0,0 1,0 2,0 1,1
 
 The shape name is optional but useful for solution summaries.
 
+### Importing puzzles from the game
+
+**Import from game** in the top bar opens puzzles straight from The Artisan of Glimmith. The game keeps each puzzle in its own folder, holding a plain-text `puzzle` file and a binary `metadata` file (title, description, author):
+
+| Puzzles | Folder |
+|---|---|
+| Made in the in-game editor | `%LOCALAPPDATA%\Geri\Saved\workshop\<puzzle id>\` |
+| Subscribed on the Steam Workshop | `<Steam library>\steamapps\workshop\content\4160210\<workshop id>\` |
+
+Choose either `workshop` folder to list every puzzle in it by title, or pick a single `puzzle` file, or paste its text. Files are read in the browser and never uploaded. Your solving progress lives separately in `%LOCALAPPDATA%\Geri\Saved\SaveGames\WorkshopSaveFile.sav` and is not imported.
+
+The reader is `src/core/game-format.js`. The `puzzle` text is a header of rule keywords followed by an ASCII grid:
+
+| Game | Editor |
+|---|---|
+| `AREA_EQUALS n` | Precision |
+| `AREA_AT_LEAST n`, `AREA_AT_MOST n` | Range |
+| `SHAPE id rows` + `SHAPE_BANK ids…` | Shape Bank |
+| `ALL_SHAPES_SAME` / `ALL_SHAPES_DIFFERENT` | Match / Mismatch |
+| `ADJACENT_SHAPES_DIFFERENT` / `ADJACENT_SIZES_DIFFERENT` | Mingle Shape / Size Separation |
+| `ONLY_RECTANGLES` / `NO_RECTANGLES` | Boxy / Non-Boxy |
+| `ONE_SYMBOL_PER_REGION` | Solitude |
+| `NO_4_WAY_INTERSECTIONS` / `NO_3_WAY_INTERSECTIONS` | Bricky / Loopy |
+| cell `..` / blank | active / inactive cell |
+| cell `05` | Area Number |
+| cell `P1`…`P5` | Rose Window symbol A…E |
+| cell `S<id>` | Polyomino clue using `SHAPE id` |
+| cell `F0 F1 F2 F3 F4 F7` | Palisade: empty, one sided, opposite, three sided, full, corner |
+| cell `U<n>D<n>L<n>R<n>` | Compass N/S/W/E (blank = any) |
+| border `#` / `##` | wall |
+| border `=` `==` / `!` `!!` | Gemini / Delta |
+| border `<` `^^` / `>` `vv` | Inequality: the arrow points at the smaller region |
+| border digit / `-<n>` | Difference |
+| corner digit | Watchtower |
+
+The token meanings were checked against the `SOLUTION` grids of the game's own puzzles.
+
 ## How the solver works
 
-The core solver generates possible region candidates, then solves an exact-cover problem:
+There are two solvers; `solvePuzzle` (`src/core/solver.js`) picks one per puzzle.
+
+**Candidate solver (exact cover).** Used when every region a solution could use can be listed up front and the list is small: a Shape Bank, a Precision area under 12, or a Range with a maximum under 12. It lists the region candidates, then solves an exact-cover problem:
 
 ```text
 Choose region candidates so every active cell is covered exactly once.
@@ -66,7 +105,15 @@ Choose region candidates so every active cell is covered exactly once.
 
 Local rules, such as area, shape bank, Rose labels, and cut/join borders, filter individual candidates. Gemini/Delta-style shape relations are checked as pairwise constraints between selected candidates.
 
-The explanation engine currently uses a reliable but simple technique:
+**Border solver** (`src/core/edge-solver.js`). Used for everything else: no size rule, Polyomino or Area Number clues on only some regions, a Range minimum with no maximum, large regions, or a candidate list that gets cut off. It decides the border between each pair of neighbouring cells (wall or open) instead of listing regions:
+
+- propagation applies sound deductions after every decision (region size bounds, clue placements, Gemini/Difference/Inequality bounds between partner regions, Compass and Palisade counts, areas too small for two regions);
+- finished regions are checked with the same rule modules as the candidate solver;
+- the search learns from dead ends like a SAT solver: each forced border records why, a contradiction is traced back to a short "nogood", and the search jumps back to where it first applies.
+
+In the app, Solve, Next step and Explain all run in a Web Worker with a time limit (Solver section) and a Cancel button. For border-solver puzzles, Next step reports borders the solver proves directly (by propagation, or because the opposite leads to a contradiction) before falling back to a full solve.
+
+The candidate solver's explanation engine uses a reliable but simple technique:
 
 1. choose an unknown border;
 2. assume it is joined;
@@ -90,12 +137,15 @@ This is not yet a human-style explanation engine, but it gives sound logical ste
 ├── src/
 │   ├── core/
 │   │   ├── candidates.js       # region candidate generation and local filters
+│   │   ├── edge-solver.js      # border solver with propagation and conflict learning
 │   │   ├── explain.js          # forced-border explanation search
+│   │   ├── game-format.js      # reader for The Artisan of Glimmith puzzle files
 │   │   ├── geometry.js         # grid, shape, mask helpers
 │   │   ├── puzzle.js           # puzzle model, JSON normalization, shape parsing
-│   │   └── solver.js           # exact-cover backtracking solver
+│   │   └── solver.js           # picks a solver; exact-cover backtracking solver
 │   └── ui/
-│       └── app.js              # SVG editor and UI event handling
+│       ├── app.js              # SVG editor and UI event handling
+│       └── solver-worker.js    # runs Solve / Next step / Explain all off the main thread
 └── test/
     └── solver.test.js          # core solver tests
 ```
@@ -113,7 +163,9 @@ This is not yet a human-style explanation engine, but it gives sound logical ste
 
 - The UI is manual drawing only; there is no OCR or automatic screenshot parsing yet.
 - Gemini/Delta clues are modeled as edge relations between adjacent cells. If the game uses a clue placement that refers to regions in a different geometric way, add that interpretation as a new relation type.
-- Candidate generation can grow quickly for large area-only boards. Shape-bank puzzles are much faster because placements are finite and constrained.
+- Candidate generation can grow quickly for large area-only boards; those puzzles go to the border solver. Shape-bank puzzles are much faster because placements are finite and constrained.
+- Very open puzzles can still exceed the time limit. For example, an 18x13 game puzzle with a 59-cell region and many clue-free regions is not solved within a minute yet; Next step still finds proven borders on it.
+- A clue constrains only its own region. Puzzles where some regions have no clue therefore often have more solutions than the clues suggest.
 - The app currently uses square cells. If a puzzle has non-rectangular visual artwork, represent it as a square-grid mask for now.
 
 ## Development notes

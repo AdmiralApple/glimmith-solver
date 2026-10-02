@@ -21,12 +21,57 @@
         <div class="top-actions">
           <button id="undoButton" type="button" disabled>Undo</button>
           <button id="redoButton" type="button" disabled>Redo</button>
+          <button id="importGameButton" type="button" title="Import a puzzle from The Artisan of Glimmith">Import from game</button>
           <button id="importJsonButton" type="button">Import JSON</button>
           <button id="exportJsonButton" type="button">Export JSON</button>
           <button id="solveButton" class="primary" type="button">Solve</button>
           <button id="nextStepButton" type="button">Next step</button>
+          <button id="cancelSolveButton" type="button" hidden>Cancel</button>
+          <button id="resetButton" class="danger reset-button" type="button">Reset</button>
         </div>
       </header>
+
+      <dialog id="gameImportDialog" class="confirm-dialog game-import-dialog" aria-labelledby="gameImportTitle">
+        <form method="dialog">
+          <h2 id="gameImportTitle">Import from The Artisan of Glimmith</h2>
+          <p>Choose the game's puzzle folder, then pick a puzzle to open it here.</p>
+          <dl class="game-paths">
+            <dt>Puzzles you made in the game</dt>
+            <dd><code id="gamePathLocal">%LOCALAPPDATA%\Geri\Saved\workshop</code><button type="button" data-copy-text="gamePathLocal">Copy</button></dd>
+            <dt>Steam Workshop puzzles you subscribed to</dt>
+            <dd><code id="gamePathWorkshop">steamapps\workshop\content\4160210</code><span class="hint">inside your Steam library folder</span></dd>
+          </dl>
+          <p class="hint">Tip: paste the path into the folder picker's address bar. Files are read in this browser and never uploaded.</p>
+          <div class="row">
+            <button id="gameFolderButton" type="button" class="primary">Choose folder…</button>
+            <button id="gameFileButton" type="button">Choose a puzzle file…</button>
+            <input id="gameFolderInput" type="file" webkitdirectory multiple hidden />
+            <input id="gameFileInput" type="file" multiple hidden />
+          </div>
+          <div id="gamePuzzleList" class="game-puzzle-list" aria-live="polite"></div>
+          <details class="advanced-panel">
+            <summary>Paste puzzle text instead</summary>
+            <textarea id="gamePuzzleText" spellcheck="false" placeholder="VERSION 1&#10;DIFFICULTY 3&#10;DIMENSIONS 6 6&#10;PUZZLE&#10;+--+--+…" aria-label="Game puzzle text"></textarea>
+            <button id="gamePasteImportButton" type="button">Import pasted text</button>
+          </details>
+          <p id="gameImportStatus" class="hint" role="status"></p>
+          <div class="dialog-actions">
+            <button value="cancel">Close</button>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog id="resetDialog" class="confirm-dialog" aria-labelledby="resetDialogTitle">
+        <form method="dialog">
+          <h2 id="resetDialogTitle">Reset the puzzle?</h2>
+          <p>This clears the board, cells, symbols, borders, clues and rule settings back to a blank 6x6 puzzle.</p>
+          <p class="hint">Named puzzles under <strong>Saved puzzles</strong> are kept. You can still use Undo right after resetting, but not after reloading the page.</p>
+          <div class="dialog-actions">
+            <button value="cancel" autofocus>Cancel</button>
+            <button value="reset" class="danger">Reset puzzle</button>
+          </div>
+        </form>
+      </dialog>
 
       <main class="workspace">
         <aside class="panel sidebar" aria-label="Workflow controls">
@@ -34,10 +79,12 @@
             <summary>Board</summary>
             <div class="section-body">
               <div class="row compact">
-                <label>Width <input id="widthInput" type="number" min="1" max="14" value="6" /></label>
-                <label>Height <input id="heightInput" type="number" min="1" max="14" value="6" /></label>
+                <label>Width <input id="widthInput" type="number" min="1" value="6" /></label>
+                <label>Height <input id="heightInput" type="number" min="1" value="6" /></label>
+                <label title="Whether cells added by enlarging the board start filled (active) or unfilled (inactive)"><input id="fillNewInput" type="checkbox" /> Fill new cells</label>
                 <button id="resizeButton" type="button">Apply</button>
               </div>
+              <p id="boardSizeWarning" class="size-warning" role="status" hidden></p>
               <div class="row compact">
                 <label class="stacked">Load example
                   <select id="exampleSelect"></select>
@@ -46,16 +93,46 @@
               </div>
               <p id="exampleDetails" class="hint">Choose an example to see covered rules.</p>
               <div class="tool-grid" role="group" aria-label="Drawing tools">
-                <button class="tool active" data-tool="cell" type="button">Active / hole cells</button>
-                <button class="tool" data-tool="symbol" type="button">Cycle symbols</button>
-                <button class="tool" data-tool="edge" type="button">Cycle borders</button>
-                <button class="tool" data-tool="relation" type="button">Relation pair clue</button>
-                <button class="tool" data-tool="areaNumber" type="button">Area number clue</button>
-                <button class="tool" data-tool="polyomino" type="button">Polyomino clue</button>
-                <button class="tool" data-tool="palisade" type="button">Palisade clue</button>
-                <button class="tool" data-tool="compass" type="button">Compass clue</button>
-                <button class="tool" data-tool="watchtower" type="button">Watchtower clue</button>
-                <button class="tool" data-tool="eraseClue" type="button">Erase clue</button>
+                <button class="tool active" data-tool="cell" type="button" title="Hotkey: right-click a cell to toggle it">
+                  <span>Active / hole cells</span><span class="tool-keys"><kbd>Right-click</kbd></span>
+                </button>
+                <button class="tool" data-tool="symbol" type="button" title="Hotkey: press W, then 1-5 over a cell for Rose Window symbol A-E">
+                  <span>Cycle symbols</span><span class="tool-keys"><kbd>W</kbd><kbd>1–5</kbd></span>
+                </button>
+                <p class="hint tool-note">Walls: hold the mouse on a corner and drag along the grid lines, in any tool. Starting on an existing wall erases instead.</p>
+                <button class="tool" data-tool="join" type="button" title="Click a border to mark it as joined (no wall). Click again to clear.">
+                  <span>Join border</span><span class="tool-keys"><kbd>Click border</kbd></span>
+                </button>
+                <button class="tool" data-tool="gemini" type="button" title="Hotkey: press G over a border">
+                  <span>Gemini clue</span><span class="tool-keys"><kbd>G</kbd></span>
+                </button>
+                <button class="tool" data-tool="delta" type="button" title="Hotkey: press D over a border">
+                  <span>Delta clue</span><span class="tool-keys"><kbd>D</kbd></span>
+                </button>
+                <button class="tool" data-tool="difference" type="button" title="Hotkey: press 0-9 over a border">
+                  <span>Difference clue</span><span class="tool-keys"><kbd>0–9</kbd></span>
+                </button>
+                <button class="tool" data-tool="inequality" type="button" title="Hotkey: press an arrow key over a border; the arrow points at the smaller region">
+                  <span>Inequality clue</span><span class="tool-keys"><kbd>Arrows</kbd></span>
+                </button>
+                <button class="tool" data-tool="areaNumber" type="button" title="Hotkey: press 0-9 over a cell (two digits quickly for 10+)">
+                  <span>Area number clue</span><span class="tool-keys"><kbd>0–9</kbd></span>
+                </button>
+                <button class="tool" data-tool="polyomino" type="button" title="Hotkey: press P over a cell to place the drawn clue shape">
+                  <span>Polyomino clue</span><span class="tool-keys"><kbd>P</kbd></span>
+                </button>
+                <button class="tool" data-tool="palisade" type="button" title="Hotkey: press #, then 0-4 over a cell (2 again for opposite)">
+                  <span>Palisade clue</span><span class="tool-keys"><kbd>#</kbd><kbd>0–4</kbd></span>
+                </button>
+                <button class="tool" data-tool="compass" type="button" title="Hotkey: press X, then 0-9 near a cell side">
+                  <span>Compass clue</span><span class="tool-keys"><kbd>X</kbd><kbd>0–9</kbd></span>
+                </button>
+                <button class="tool" data-tool="watchtower" type="button" title="Hotkey: press 1-4 over a grid corner">
+                  <span>Watchtower clue</span><span class="tool-keys"><kbd>1–4</kbd></span>
+                </button>
+                <button class="tool" data-tool="eraseClue" type="button" title="Hotkey: press Delete over a clue">
+                  <span>Erase clue</span><span class="tool-keys"><kbd>Del</kbd></span>
+                </button>
               </div>
             </div>
           </details>
@@ -63,110 +140,138 @@
           <details class="workflow-section" open>
             <summary>Rules</summary>
             <div class="section-body">
+              <div id="ruleFilter" class="rule-filter segmented" role="radiogroup" aria-label="Which rules to show">
+                <label><input name="ruleFilter" type="radio" value="all" checked /> All rules</label>
+                <label><input name="ruleFilter" type="radio" value="active" /> Active <span id="activeRuleCount" class="rule-filter-count">0</span></label>
+              </div>
               <div id="rulePalette" class="rule-palette" aria-label="Rule palette"></div>
-              <div class="field-grid">
-                <label class="stacked">Precision area
-                  <input id="areaInput" type="number" min="0" max="20" value="4" />
-                </label>
-                <label class="stacked">Rose labels required per region
-                  <input id="roseInput" type="text" placeholder="Example: ABC" />
-                </label>
-              </div>
-              <label class="checkbox-row single"><input id="shapeEquivRotationsInput" type="checkbox" checked /> Rotated regions compare as the same shape</label>
-              <label class="checkbox-row single"><input id="shapeEquivReflectionsInput" type="checkbox" checked /> Reflected regions compare as the same shape</label>
-            </div>
-          </details>
+              <p id="ruleFilterEmpty" class="hint" hidden>No rules are active yet. Switch to All rules to enable one.</p>
 
-          <details class="workflow-section" open>
-            <summary>Clues</summary>
-            <div class="section-body">
-              <label class="stacked">Area number value
-                <input id="areaClueValueInput" type="number" min="1" max="20" value="4" />
-              </label>
-              <label class="stacked">Relation clue type
-                <select id="relationRuleInput">
-                  <option value="gemini">Gemini / same shape</option>
-                  <option value="delta">Delta / different shape</option>
-                  <option value="difference">Difference / area gap</option>
-                  <option value="inequality">Inequality / area order</option>
-                </select>
-              </label>
-              <label class="stacked">Difference value
-                <input id="differenceValueInput" type="number" min="0" max="20" value="1" />
-              </label>
-              <label class="stacked">Inequality direction
-                <select id="inequalityDirectionInput">
-                  <option value="lt">First region &lt; second region</option>
-                  <option value="gt">First region &gt; second region</option>
-                </select>
-              </label>
-              <p id="relationPickHint" class="hint">Choose Relation pair clue, then click an edge or two edge-adjacent active cells.</p>
-              <label class="stacked">Watchtower value
-                <select id="watchtowerValueInput">
-                  <option value="1">1 region</option>
-                  <option value="2">2 regions</option>
-                  <option value="3">3 regions</option>
-                  <option value="4">4 regions</option>
-                </select>
-              </label>
-              <label class="stacked">Palisade pattern
-                <select id="palisadePatternInput">
-                  <option value="empty">Empty: 0 borders</option>
-                  <option value="one_sided">One sided: 1 border</option>
-                  <option value="corner">Corner: 2 adjacent borders</option>
-                  <option value="opposite">Opposite: 2 opposite borders</option>
-                  <option value="three_sided">Three sided: 3 borders</option>
-                  <option value="full">Full: 4 borders</option>
-                </select>
-              </label>
-              <div class="field-grid">
-                <label class="stacked">Compass N <input id="compassNInput" type="number" min="0" max="20" placeholder="Any" /></label>
-                <label class="stacked">Compass E <input id="compassEInput" type="number" min="0" max="20" placeholder="Any" /></label>
-                <label class="stacked">Compass S <input id="compassSInput" type="number" min="0" max="20" placeholder="Any" /></label>
-                <label class="stacked">Compass W <input id="compassWInput" type="number" min="0" max="20" placeholder="Any" /></label>
-              </div>
-              <div class="mini-editor">
-                <div class="mini-editor-header">
-                  <strong>Polyomino clue shape</strong>
-                  <button id="clearPolyominoButton" type="button">Clear</button>
+              <!-- Per-rule settings. At startup each block is moved into its rule card
+                   (data-settings-for) or rule group (data-group-settings). -->
+              <div id="ruleSettingsStore" hidden>
+                <div data-group-settings="Shapes" class="group-settings">
+                  <span class="group-settings-label">Shape comparison</span>
+                  <label><input id="shapeEquivRotationsInput" type="checkbox" checked /> Rotations count as the same shape</label>
+                  <label><input id="shapeEquivReflectionsInput" type="checkbox" checked /> Reflections count as the same shape</label>
                 </div>
-                <div id="polyominoClueGrid" class="mini-grid" aria-label="Polyomino clue shape editor"></div>
-                <div class="row checkbox-row">
-                  <label><input id="polyominoRotationsInput" type="checkbox" checked /> Rotations</label>
-                  <label><input id="polyominoReflectionsInput" type="checkbox" checked /> Reflections</label>
-                </div>
-              </div>
-            </div>
-          </details>
 
-          <details class="workflow-section" open>
-            <summary>Shapes</summary>
-            <div class="section-body">
-              <div id="shapeBankList" class="shape-bank-list" aria-label="Shape bank list"></div>
-              <div class="mini-editor">
-                <div class="mini-editor-header">
-                  <strong>Draw shape-bank entry</strong>
-                  <button id="clearShapeDraftButton" type="button">Clear</button>
+                <div data-settings-for="precision">
+                  <label class="inline-field">Every region has <input id="areaInput" type="number" min="1" value="4" /> cells</label>
                 </div>
-                <label class="stacked">Shape name
-                  <input id="shapeNameInput" type="text" value="Shape1" />
-                </label>
-                <div id="shapeMiniGrid" class="mini-grid" aria-label="Shape bank mini-grid editor"></div>
-                <div class="row">
-                  <button id="addShapeButton" type="button">Add drawn shape</button>
-                  <button id="tetrominoButton" type="button">Load tetromino preset</button>
+
+                <div data-settings-for="area_number">
+                  <label class="inline-field">Value to place <input id="areaClueValueInput" type="number" min="1" value="4" /></label>
+                  <p class="hint">Or hover a cell and type the number.</p>
+                </div>
+
+                <div data-settings-for="difference">
+                  <label class="inline-field">Area gap to place <input id="differenceValueInput" type="number" min="0" value="1" /></label>
+                  <p class="hint">Or hover a border and type the number.</p>
+                </div>
+
+                <div data-settings-for="range">
+                  <div class="inline-fields">
+                    <label class="inline-field">Min <input data-range-option="min" type="number" min="1" /></label>
+                    <label class="inline-field">Max <input data-range-option="max" type="number" min="1" /></label>
+                    <span class="hint">cells per region</span>
+                  </div>
+                </div>
+
+                <div data-settings-for="shape_bank">
+                  <div id="shapeBankList" class="shape-bank-list" aria-label="Shape bank list"></div>
+                  <div class="mini-editor">
+                    <div class="mini-editor-header">
+                      <strong>Draw a shape</strong>
+                      <button id="clearShapeDraftButton" type="button">Clear</button>
+                    </div>
+                    <label class="stacked">Shape name
+                      <input id="shapeNameInput" type="text" value="Shape1" />
+                    </label>
+                    <div id="shapeMiniGrid" class="mini-grid" aria-label="Shape bank mini-grid editor"></div>
+                    <div class="row">
+                      <button id="addShapeButton" type="button">Add drawn shape</button>
+                      <button id="tetrominoButton" type="button">Load tetromino preset</button>
+                    </div>
+                  </div>
+                  <div class="row checkbox-row">
+                    <label><input id="rotationsInput" type="checkbox" checked /> Allow rotations</label>
+                    <label><input id="reflectionsInput" type="checkbox" checked /> Allow reflections</label>
+                  </div>
+                  <details class="advanced-panel">
+                    <summary>Raw shape text</summary>
+                    <textarea id="shapeBankInput" spellcheck="false" placeholder="O4: 0,0 1,0 0,1 1,1" aria-label="Raw shape bank text"></textarea>
+                  </details>
+                </div>
+
+                <div data-settings-for="polyomino">
+                  <div class="mini-editor">
+                    <div class="mini-editor-header">
+                      <strong>Clue shape to place</strong>
+                      <button id="clearPolyominoButton" type="button">Clear</button>
+                    </div>
+                    <div id="polyominoClueGrid" class="mini-grid" aria-label="Polyomino clue shape editor"></div>
+                    <div class="row checkbox-row">
+                      <label><input id="polyominoRotationsInput" type="checkbox" checked /> Rotations</label>
+                      <label><input id="polyominoReflectionsInput" type="checkbox" checked /> Reflections</label>
+                    </div>
+                  </div>
+                </div>
+
+                <div data-settings-for="mingle_shape">
+                  <label><input type="checkbox" data-mingle-option="allowRotations" /> Rotations count as the same shape</label>
+                  <label><input type="checkbox" data-mingle-option="allowReflections" /> Reflections count as the same shape</label>
+                </div>
+
+                <div data-settings-for="rose_window">
+                  <label class="inline-field">Symbols per region <input id="roseInput" type="text" placeholder="e.g. ABC" /></label>
+                  <p class="hint">Each region needs one of each listed symbol. Put symbols on cells with Cycle symbols, or W then 1-5.</p>
+                </div>
+
+                <div data-settings-for="palisade">
+                  <label class="inline-field">Pattern to place
+                    <select id="palisadePatternInput">
+                      <option value="empty">Empty: 0 borders</option>
+                      <option value="one_sided">One sided: 1 border</option>
+                      <option value="corner">Corner: 2 adjacent borders</option>
+                      <option value="opposite">Opposite: 2 opposite borders</option>
+                      <option value="three_sided">Three sided: 3 borders</option>
+                      <option value="full">Full: 4 borders</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div data-settings-for="compass">
+                  <div class="compass-fields">
+                    <label class="inline-field">N <input id="compassNInput" type="number" min="0" placeholder="Any" /></label>
+                    <label class="inline-field">E <input id="compassEInput" type="number" min="0" placeholder="Any" /></label>
+                    <label class="inline-field">S <input id="compassSInput" type="number" min="0" placeholder="Any" /></label>
+                    <label class="inline-field">W <input id="compassWInput" type="number" min="0" placeholder="Any" /></label>
+                  </div>
+                  <p class="hint">Blank means any count in that direction.</p>
+                </div>
+
+                <div data-settings-for="watchtower">
+                  <label class="inline-field">Value to place
+                    <select id="watchtowerValueInput">
+                      <option value="1">1 region</option>
+                      <option value="2">2 regions</option>
+                      <option value="3">3 regions</option>
+                      <option value="4">4 regions</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div data-settings-for="inequality">
+                  <label class="inline-field">Direction to place
+                    <select id="inequalityDirectionInput">
+                      <option value="lt">First region &lt; second region</option>
+                      <option value="gt">First region &gt; second region</option>
+                    </select>
+                  </label>
+                  <p class="hint">Or hover a border and press an arrow key; the arrow points at the smaller region.</p>
                 </div>
               </div>
-              <div class="row checkbox-row">
-                <label><input id="rotationsInput" type="checkbox" checked /> Shape-bank rotations</label>
-                <label><input id="reflectionsInput" type="checkbox" checked /> Shape-bank reflections</label>
-              </div>
-              <details class="advanced-panel">
-                <summary>Advanced raw shape text</summary>
-                <label class="stacked">Shape bank
-                  <textarea id="shapeBankInput" spellcheck="false" placeholder="O4: 0,0 1,0 0,1 1,1"></textarea>
-                </label>
-              </details>
             </div>
           </details>
 
@@ -230,6 +335,9 @@
               <label class="stacked">Max solver nodes
                 <input id="maxNodesInput" type="number" min="1000" step="1000" value="250000" />
               </label>
+              <label class="stacked">Time limit (seconds)
+                <input id="maxSecondsInput" type="number" min="1" step="5" value="60" />
+              </label>
               <div class="row">
                 <button id="explainAllButton" type="button">Explain all</button>
                 <button id="applyStepButton" type="button" disabled>Apply step</button>
@@ -256,6 +364,7 @@
               <p id="currentToolDescription">Click a cell to toggle whether it belongs to the puzzle.</p>
             </div>
             <p id="currentToolParams" class="tool-params">Click again to undo.</p>
+            <p id="relationPickHint" class="hint relation-pick-hint" hidden></p>
           </section>
           <div class="panel board-panel">
             <svg id="boardSvg" role="img" aria-label="Puzzle board"></svg>
@@ -293,9 +402,11 @@
               <dd>Active cells are partitioned by the solver; holes are ignored.</dd>
               <dt>Cycle symbols</dt>
               <dd>Cell symbols feed Rose Windows.</dd>
-              <dt>Cycle borders</dt>
-              <dd>Edge marks cycle through cut, join, Gemini, and Delta.</dd>
-              <dt>Relation pair clue</dt>
+              <dt>Walls</dt>
+              <dd>Press on a corner and drag along grid lines; walls appear as you pass each corner. A stroke that starts on an existing wall erases.</dd>
+              <dt>Join border</dt>
+              <dd>Marks a border as known to be inside one region (no wall).</dd>
+              <dt>Gemini / Delta / Difference / Inequality</dt>
               <dd>Click an edge or two edge-adjacent cells to relate their eventual regions.</dd>
               <dt>Area number clue</dt>
               <dd>Places a fixed region-size clue on one cell.</dd>
@@ -305,6 +416,8 @@
               <dd>Place cell clues for side-border patterns or directional counts.</dd>
               <dt>Watchtower clue</dt>
               <dd>Click a grid vertex to count distinct regions touching that corner.</dd>
+              <dt>Hotkeys (hover the board)</dt>
+              <dd>Right-click toggles a cell; drag corner to corner for given borders. W then 1-5 Rose Window; D / G Delta / Gemini on a border; P Polyomino; # then 0-4 Palisade; X then 0-9 Compass (side nearest the pointer); 0-9 over a cell Area Number; 0-9 over a border Difference; 1-4 over a corner Watchtower; arrow keys over a border Inequality (arrow points at the smaller region); Delete removes the clue; Esc cancels a W / # / X mode.</dd>
               <dt>Boundary graph</dt>
               <dd>Shows selected solution borders and highlights degree 3 or degree 4 vertices for Loopy and Bricky debugging.</dd>
               <dt>Screenshot tracing</dt>

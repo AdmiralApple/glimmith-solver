@@ -24,8 +24,12 @@ export const EXAMPLES = Object.freeze([
     width: 2,
     height: 2,
     rules: { area: 0 },
+    // A clue only constrains its own region, so each column gets one.
     clues: [
       cellClue("vertical_domino", "polyomino", 0, {
+        params: { shape: [[0, 0], [0, 1]], allowRotations: false, allowReflections: false }
+      }),
+      cellClue("vertical_domino_right", "polyomino", 1, {
         params: { shape: [[0, 0], [0, 1]], allowRotations: false, allowReflections: false }
       })
     ]

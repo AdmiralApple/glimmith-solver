@@ -113,15 +113,14 @@ test("Polyomino clues can source and filter shape candidates", () => {
   const puzzle = createPuzzle(2, 2);
   puzzle.rules.area = 0;
   puzzle.rules.polyomino = { allowRotations: false, allowReflections: false };
-  puzzle.clues = [
-    {
-      id: "vertical_domino",
-      type: "cell",
-      ruleId: "polyomino",
-      location: { type: "cell", cell: 0 },
-      params: { shape: [[0, 0], [0, 1]] }
-    }
-  ];
+  // Each clue only constrains its own region, so both columns need a clue for a unique answer.
+  puzzle.clues = [0, 1].map((cell) => ({
+    id: `vertical_domino_${cell}`,
+    type: "cell",
+    ruleId: "polyomino",
+    location: { type: "cell", cell },
+    params: { shape: [[0, 0], [0, 1]] }
+  }));
 
   const result = solvePuzzle(puzzle, { limit: 2 });
   assert.equal(result.status, "unique_solution");

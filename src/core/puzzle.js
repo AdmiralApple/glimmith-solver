@@ -1,4 +1,5 @@
 import { edgeKey, idx, normalizeShape, parseEdgeKey } from "./geometry.js";
+import { relationReferenceCells } from "./rules/relations.js";
 
 export const EDGE_STATES = [null, "cut", "join"];
 export const EDGE_RELATIONS = [null, "sameShape", "differentShape"];
@@ -82,7 +83,7 @@ export function normalizePuzzle(raw = {}) {
   return puzzle;
 }
 
-export function resizePuzzle(puzzle, width, height) {
+export function resizePuzzle(puzzle, width, height, { fillNew = false } = {}) {
   const next = createPuzzle(width, height);
   next.rules = { ...puzzle.rules };
   next.shapeBank = { ...puzzle.shapeBank };
@@ -93,7 +94,7 @@ export function resizePuzzle(puzzle, width, height) {
 
   const minW = Math.min(puzzle.width, width);
   const minH = Math.min(puzzle.height, height);
-  next.active.fill(false);
+  next.active.fill(Boolean(fillNew));
   for (let y = 0; y < minH; y += 1) {
     for (let x = 0; x < minW; x += 1) {
       const oldIndex = idx(x, y, puzzle.width);
@@ -125,6 +126,14 @@ export function cycleCellSymbol(puzzle, index, symbols = ["", "A", "B", "C", "D"
   return normalizePuzzle(next);
 }
 
+export function setCellSymbol(puzzle, index, symbol) {
+  if (!puzzle.active[index]) return puzzle;
+  const next = clonePuzzle(puzzle);
+  if (symbol && next.symbols[index] !== symbol) next.symbols[index] = symbol;
+  else delete next.symbols[index];
+  return normalizePuzzle(next);
+}
+
 export function setEdgeState(puzzle, a, b, state) {
   const next = clonePuzzle(puzzle);
   const key = edgeKey(a, b);
@@ -149,6 +158,38 @@ export function setEdgeRelation(puzzle, a, b, relation) {
   next.edgeConstraints = constraints;
   next.edges = constraints;
   return normalizePuzzle(next);
+}
+
+/** Border effects (relation clues such as Gemini, Delta, Difference, Inequality) on the border between a and b. */
+export function borderEffectsOnEdge(puzzle, a, b) {
+  const key = edgeKey(a, b);
+  return (puzzle.clues ?? []).filter((clue) => {
+    if (clue.type !== "relation") return false;
+    const cells = relationReferenceCells(clue);
+    return Boolean(cells) && edgeKey(cells[0], cells[1]) === key;
+  });
+}
+
+/** Removes every border effect on the border between a and b. The wall itself is left alone. */
+export function removeBorderEffects(puzzle, a, b) {
+  const ids = new Set(borderEffectsOnEdge(puzzle, a, b).map((clue) => clue.id));
+  const legacyRelation = (puzzle.edgeConstraints ?? puzzle.edges ?? {})[edgeKey(a, b)]?.relation;
+  if (ids.size === 0 && !legacyRelation) return puzzle;
+  const next = legacyRelation ? setEdgeRelation(puzzle, a, b, null) : puzzle;
+  return normalizePuzzle({ ...next, clues: (next.clues ?? []).filter((clue) => !ids.has(clue.id)) });
+}
+
+/**
+ * Places a border effect. A border holds at most one effect, so any existing
+ * effect there is replaced, and a border with an effect is always a wall.
+ */
+export function placeBorderEffect(puzzle, clue) {
+  const cells = relationReferenceCells(clue);
+  if (!cells) return puzzle;
+  const [a, b] = cells;
+  const next = setEdgeState(removeBorderEffects(puzzle, a, b), a, b, "cut");
+  const rules = { ...next.rules, [clue.ruleId]: next.rules[clue.ruleId] ?? {} };
+  return normalizePuzzle({ ...next, rules, clues: [...(next.clues ?? []), clue] });
 }
 
 export function cycleEdgeConstraint(puzzle, a, b) {

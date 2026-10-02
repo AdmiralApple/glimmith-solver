@@ -11,6 +11,7 @@ import {
 import { createConstraintModel } from "../src/core/constraints.js";
 import { canonicalShapeKey, maskFromIndexes } from "../src/core/geometry.js";
 import { normalizePuzzle } from "../src/core/puzzle.js";
+import { solvePuzzle } from "../src/core/solver.js";
 import { areaNumberRule } from "../src/core/rules/area-number.js";
 import { boxyRule, nonBoxyRule } from "../src/core/rules/area-shape-filters.js";
 import { brickyRule } from "../src/core/rules/bricky.js";
@@ -200,6 +201,26 @@ test("Boxy and Non-Boxy filter filled rectangles in opposite directions", () => 
   assert.equal(boxyRule.candidateFilter(bent, context), false);
   assert.equal(nonBoxyRule.candidateFilter(rectangle, context), false);
   assert.equal(nonBoxyRule.candidateFilter(bent, context), true);
+});
+
+test("Boxy and Non-Boxy judge rectangles anywhere on the board, not only at the top-left", () => {
+  const context = createRuleContext(normalizePuzzle({ width: 4, height: 3, rules: { boxy: {}, non_boxy: {} } }));
+  const lowerRightSquare = candidate([6, 7, 10, 11], 4);
+  const offsetBar = candidate([5, 6], 4);
+  const offsetBent = candidate([6, 10, 11], 4);
+
+  assert.equal(boxyRule.candidateFilter(lowerRightSquare, context), true);
+  assert.equal(boxyRule.candidateFilter(offsetBar, context), true);
+  assert.equal(boxyRule.candidateFilter(offsetBent, context), false);
+  assert.equal(nonBoxyRule.candidateFilter(lowerRightSquare, context), false);
+  assert.equal(nonBoxyRule.candidateFilter(offsetBent, context), true);
+
+  // End to end: a 2x2 board of area-2 rectangles has exactly the two domino tilings.
+  const boxy = solvePuzzle({ width: 2, height: 2, rules: { area: 2, boxy: {} } }, { limit: 3 });
+  assert.equal(boxy.solutions.length, 2);
+  // A lone square away from the corner is a rectangle, so Non-Boxy leaves no solution.
+  const nonBoxy = solvePuzzle({ width: 3, height: 3, activeCells: [4, 5, 7, 8], rules: { area: 4, non_boxy: {} } }, { limit: 2 });
+  assert.equal(nonBoxy.status, "no_solution");
 });
 
 test("Inequality validates directions and rejects incompatible area pairs", () => {

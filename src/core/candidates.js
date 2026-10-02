@@ -43,11 +43,12 @@ export function generateCandidates(puzzle, options = {}) {
   filtered.sort((a, b) => a.cells[0] - b.cells[0] || a.area - b.area || a.shapeKey.localeCompare(b.shapeKey));
   for (let id = 0; id < filtered.length; id += 1) filtered[id].id = id;
 
-  if (raw.length >= maxCandidates) {
+  const truncated = raw.length >= maxCandidates;
+  if (truncated) {
     errors.push(`Candidate generation stopped at ${maxCandidates} regions. Add more rules or lower the board size.`);
   }
 
-  return { candidates: filtered, errors, plan };
+  return { candidates: filtered, errors, plan, truncated };
 }
 
 export function generateCandidateDiagnostics(puzzle, options = {}) {
